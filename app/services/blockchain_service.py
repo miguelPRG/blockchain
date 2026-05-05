@@ -1,4 +1,4 @@
-"""Integração Web3 para ancoragem de hash em Sepolia e verificação de prova."""
+"""Integração Web3 para ancoragem de hash em Ethereum Mainnet e verificação de prova."""
 
 from dataclasses import dataclass
 
@@ -32,26 +32,26 @@ class AnchorResult:
 
 def get_web3() -> Web3 | None:
     """Retornar um cliente Web3 se RPC estiver configurado, caso contrário None."""
-    if not settings.sepolia_rpc_url:
+    if not settings.mainnet_rpc_url:
         return None
-    return Web3(Web3.HTTPProvider(settings.sepolia_rpc_url))
+    return Web3(Web3.HTTPProvider(settings.mainnet_rpc_url))
 
 
 def check_connection_status() -> str:
-    """Status de conectividade Sepolia legível para humanos para logs de inicialização."""
+    """Status de conectividade Mainnet legível para humanos para logs de inicialização."""
     client = get_web3()
     if client is None:
-        return "SEPOLIA_RPC_URL not configured."
+        return "MAINNET_RPC_URL not configured."
     try:
         connected = client.is_connected()
-        return "Connected to Sepolia RPC." if connected else "Unable to connect to Sepolia RPC."
+        return "Connected to Mainnet RPC." if connected else "Unable to connect to Mainnet RPC."
     except Exception as exc:  # noqa: BLE001
-        return f"Sepolia connection error: {exc}"
+        return f"Mainnet connection error: {exc}"
 
 
 def anchor_hash(payload_hash: str, manifest_id: str) -> AnchorResult:
     """
-    Ancorar hash SHA-256 em Sepolia através do contrato Anchor.sol.
+    Ancorar hash SHA-256 em Mainnet através do contrato Anchor.sol.
 
     Retorna status gracioso se as configurações da cadeia ainda não estão configuradas.
     """
@@ -80,7 +80,7 @@ def anchor_hash(payload_hash: str, manifest_id: str) -> AnchorResult:
 
 
 def verify_tx_exists(tx_hash: str | None) -> bool:
-    """Verificar se hash tx existe em Sepolia (prova básica de presença)."""
+    """Verificar se hash tx existe em Mainnet (prova básica de presença)."""
     if not tx_hash:
         return False
     w3 = get_web3()

@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     app_name: str = "Blockchain Supply Chain Tracking - Cerveja Artesanal"
     app_version: str = "0.1.0"
     database_url: str = "sqlite:///./supply_chain.db"
-    sepolia_rpc_url: str = ""
+    mainnet_rpc_url: str = ""
     contract_address: str = ""
     private_key_for_deploy: str = ""
 

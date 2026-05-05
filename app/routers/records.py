@@ -17,7 +17,7 @@ router = APIRouter(prefix="/records", tags=["Records"])
     description=(
         "Cria registro assinado (PRODUCED/TRANSFER/RECEIVED/DELIVERY). "
         "O backend verifica a assinatura, impõe consistência de estoque, armazena fora da cadeia, "
-        "e ancora o hash do registro em Sepolia."
+        "e ancora o hash do registro em Mainnet."
     ),
 )
 async def create_record_endpoint(request: RecordCreateRequest, db: Session = Depends(get_db)) -> RecordResponse:

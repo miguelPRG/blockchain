@@ -18,7 +18,7 @@ def main() -> None:
     parser.add_argument("--signature", required=True, help="Assinatura ECDSA em hex")
     parser.add_argument("--public-key", required=True, help="Chave pública ECDSA em hex")
     parser.add_argument("--expected-hash", required=True, help="Hash SHA-256 esperado da API/banco de dados")
-    parser.add_argument("--tx-hash", default=None, help="Hash de transação Sepolia opcional")
+    parser.add_argument("--tx-hash", default=None, help="Hash de transação Mainnet opcional")
     args = parser.parse_args()
 
     payload = json.loads(Path(args.payload_file).read_text(encoding="utf-8"))

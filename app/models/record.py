@@ -9,7 +9,7 @@ from app.core.database import Base
 
 
 class Record(Base):
-    """Registro de operação assinado e com hash ancorado em Sepolia."""
+    """Registro de operação assinado e com hash ancorado em Mainnet."""
 
     __tablename__ = "records"
 

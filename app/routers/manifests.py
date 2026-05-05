@@ -17,7 +17,7 @@ router = APIRouter(prefix="/manifests", tags=["Manifests"])
     description=(
         "Cria um Manifesto de Bens assinado para um lote de cerveja artesanal. "
         "O servidor verifica a assinatura ECDSA, calcula o hash SHA-256, armazena fora da cadeia em SQLite, "
-        "e tenta ancorar o hash em Sepolia."
+        "e tenta ancorar o hash em Mainnet."
     ),
 )
 async def create_manifest_endpoint(request: ManifestCreateRequest, db: Session = Depends(get_db)) -> ManifestResponse:

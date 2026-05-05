@@ -1,7 +1,10 @@
 """Ponto de entrada FastAPI para rastreabilidade de cerveja artesanal baseada em blockchain."""
 
+import os
 from contextlib import asynccontextmanager
 
+from eth_account import Account
+from dotenv import load_dotenv
 from fastapi import FastAPI
 from rich import print as rprint
 
@@ -13,13 +16,31 @@ from app.routers.records import router as records_router
 from app.routers.verification import router as verification_router
 from app.services.blockchain_service import check_connection_status
 
+load_dotenv()
+
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    """Inicializar esquema de DB e imprimir status de conexão Sepolia na inicialização."""
+    """Inicializar esquema de DB e imprimir status de conexão Mainnet na inicialização."""
     Base.metadata.create_all(bind=engine)
     rprint(f"[bold cyan]Iniciando:[/bold cyan] {settings.app_name} v{settings.app_version}")
-    rprint(f"[bold yellow]Status Sepolia:[/bold yellow] {check_connection_status()}")
+    rprint(f"[bold yellow]Status Mainnet:[/bold yellow] {check_connection_status()}")
+    
+    # Verificar chave privada
+    private_key = os.getenv("PRIVATE_KEY_FOR_DEPLOY")
+    if private_key:
+        try:
+            # Adicionar prefixo 0x se não tiver
+            if not private_key.startswith("0x"):
+                private_key = f"0x{private_key}"
+            
+            account = Account.from_key(private_key)
+            rprint(f"[bold green]✓ Wallet conectada:[/bold green] {account.address}")
+        except Exception as e:
+            rprint(f"[bold red]✗ Erro na chave privada:[/bold red] {e}")
+    else:
+        rprint(f"[bold red]✗ PRIVATE_KEY_FOR_DEPLOY não configurada[/bold red]")
+    
     yield
 
 
@@ -28,7 +49,7 @@ app = FastAPI(
     version=settings.app_version,
     description=(
         "API de cadeia de suprimentos híbrida em blockchain para Cerveja Artesanal. "
-        "Dados operacionais são armazenados fora da cadeia em SQLite; hashes SHA-256 são ancorados em Ethereum Sepolia."
+        "Dados operacionais são armazenados fora da cadeia em SQLite; hashes SHA-256 são ancorados em Ethereum Mainnet."
     ),
     lifespan=lifespan,
 )

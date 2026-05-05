@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+pragma solidity ^0.8.35;
 
 /// @title Anchor - contrato minimalista de ancoragem de hash
 /// @notice Armazena hashes de registro imutáveis para verificação independente fora da cadeia.

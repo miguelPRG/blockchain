@@ -14,7 +14,7 @@ class MessageResponse(BaseModel):
 class AnchorInfo(BaseModel):
     """Metadados de resultado de ancoragem em blockchain."""
 
-    tx_hash: str | None = Field(default=None, description="Hash de transação Sepolia se a ancoragem foi bem-sucedida.")
+    tx_hash: str | None = Field(default=None, description="Hash de transação Mainnet se a ancoragem foi bem-sucedida.")
     anchored: bool = Field(..., description="Verdadeiro quando uma transação blockchain válida foi enviada.")
     reason: str | None = Field(default=None, description="Razão quando a ancoragem não é realizada.")
 
