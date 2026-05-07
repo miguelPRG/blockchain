@@ -1,13 +1,9 @@
 """Ponto de entrada FastAPI para rastreabilidade de cerveja artesanal baseada em blockchain."""
 
-import os
 from contextlib import asynccontextmanager
-
 from eth_account import Account
-from dotenv import load_dotenv
 from fastapi import FastAPI
 from rich import print as rprint
-
 from app.core.database import Base, engine
 from app.core.settings import settings
 from app.routers.health import router as health_router
@@ -16,18 +12,16 @@ from app.routers.records import router as records_router
 from app.routers.verification import router as verification_router
 from app.services.blockchain_service import check_connection_status
 
-load_dotenv()
-
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    """Inicializar esquema de DB e imprimir status de conexão Mainnet na inicialização."""
+    """Inicializar esquema de DB e imprimir status de conexão Sepolia na inicialização."""
     Base.metadata.create_all(bind=engine)
     rprint(f"[bold cyan]Iniciando:[/bold cyan] {settings.app_name} v{settings.app_version}")
-    rprint(f"[bold yellow]Status Mainnet:[/bold yellow] {check_connection_status()}")
+    rprint(f"[bold yellow]Network Status:[/bold yellow] {check_connection_status()}")
     
     # Verificar chave privada
-    private_key = os.getenv("PRIVATE_KEY_FOR_DEPLOY")
+    private_key = settings.private_key_for_deploy
     if private_key:
         try:
             # Adicionar prefixo 0x se não tiver

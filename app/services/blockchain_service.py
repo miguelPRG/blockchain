@@ -1,4 +1,4 @@
-"""Integração Web3 para ancoragem de hash em Ethereum Mainnet e verificação de prova."""
+"""Integração Web3 para ancoragem de hash em Ethereum e verificação de prova."""
 
 from dataclasses import dataclass
 
@@ -32,16 +32,16 @@ class AnchorResult:
 
 def get_web3() -> Web3 | None:
     """Retornar um cliente Web3 se RPC estiver configurado, caso contrário None."""
-    if not settings.mainnet_rpc_url:
+    if not settings.spolia_rpc_url:
         return None
-    return Web3(Web3.HTTPProvider(settings.mainnet_rpc_url))
+    return Web3(Web3.HTTPProvider(settings.spolia_rpc_url))
 
 
 def check_connection_status() -> str:
-    """Status de conectividade Mainnet legível para humanos para logs de inicialização."""
+    """Status de conectividade Sepolia legível para humanos para logs de inicialização."""
     client = get_web3()
     if client is None:
-        return "MAINNET_RPC_URL not configured."
+        return "SPOLIA_RPC_URL not configured."
     try:
         connected = client.is_connected()
         return "Connected to Mainnet RPC." if connected else "Unable to connect to Mainnet RPC."
@@ -51,7 +51,7 @@ def check_connection_status() -> str:
 
 def anchor_hash(payload_hash: str, manifest_id: str) -> AnchorResult:
     """
-    Ancorar hash SHA-256 em Mainnet através do contrato Anchor.sol.
+    Ancorar hash SHA-256 em Sepolia através do contrato Anchor.sol.
 
     Retorna status gracioso se as configurações da cadeia ainda não estão configuradas.
     """

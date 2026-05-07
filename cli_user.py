@@ -3,30 +3,24 @@
 from __future__ import annotations
 
 import json
-import os
 import sys
 from datetime import datetime, timezone
-from pathlib import Path
 from urllib import request as urlrequest
-
-from dotenv import load_dotenv  # ← ADICIONAR ISTO
 from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Prompt, Confirm
 from rich.table import Table
-
 from app.core.hashing import sha256_hex
 from app.core.security import sign_hash, get_public_key_from_private
+from app.core.settings import settings
 
 
 console = Console()
 # Carregar .env no início da aplicação
-load_dotenv(Path(__file__).parent / ".env")  # ← ADICIONAR ISTO
-
 
 def load_keys() -> tuple[str, str]:
     """Carregar chaves do .env."""
-    private_key = os.getenv("PRIVATE_KEY_FOR_DEPLOY", "").strip()
+    private_key = settings.private_key_for_deploy.strip()
     
     if not private_key:
         console.print("[red]✗ Erro: PRIVATE_KEY_FOR_DEPLOY não configurada em .env[/red]")

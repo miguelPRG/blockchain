@@ -219,7 +219,7 @@ pip install -e .
 ### 2. Configuração (`.env`)
 
 ```env
-MAINNET_RPC_URL=https://eth-mainnet.g.alchemy.com/v2/YOUR_KEY
+SPOLIA_RPC_URL=https://sepolia.infura.io/v3/YOUR_KEY
 CONTRACT_ADDRESS=0x...
 PRIVATE_KEY_FOR_DEPLOY=0x...
 ```

@@ -30,5 +30,6 @@ def verify_signature(public_key_hex: str, hash_hex: str, signature_hex: str) -> 
 
 def address_from_public_key(public_key_hex: str) -> str:
     """Construir um pseudo-endereço a partir da chave pública para identificação do usuário."""
+    print(f"Cervejaria: {public_key_hex}")  # Debug: mostrar parte da chave pública
     digest = hashlib.sha256(bytes.fromhex(public_key_hex)).hexdigest()
     return f"0x{digest[-40:]}"
