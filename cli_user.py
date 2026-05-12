@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sys
+import logging
 from datetime import datetime, timezone
 from urllib import request as urlrequest
 from rich.console import Console
@@ -11,8 +12,20 @@ from rich.panel import Panel
 from rich.prompt import Prompt, Confirm
 from rich.table import Table
 from app.core.hashing import sha256_hex
-from app.core.security import sign_hash, get_public_key_from_private
+from app.core.security import sign_hash, get_public_key_from_private, address_from_public_key
 from app.core.settings import settings
+from app.core.hashing import canonical_json
+
+# Configurar logging COM ficheiro
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('/tmp/blockchain_cli_debug.log'),
+        logging.StreamHandler(sys.stderr)
+    ]
+)
+logger = logging.getLogger(__name__)
 
 
 console = Console()
@@ -35,6 +48,7 @@ def load_keys() -> tuple[str, str]:
         public_key = f"0x{public_key}"
         
         console.print(f"[green]✓ Chaves carregadas do .env[/green]")
+        console.print(f"[dim]Chave Privada: {private_key[:10]}...{private_key[-4:]}[/dim]")
         console.print(f"[dim]Chave Pública: {public_key[:10]}...{public_key[-4:]}[/dim]\n")
         
         return private_key, public_key
@@ -70,7 +84,7 @@ def create_manifest_interactive(base_url: str, private_key: str, public_key: str
     """Criar manifesto de forma interativa."""
     console.print("\n[bold cyan]📋 Criar Novo Manifesto[/bold cyan]")
     console.print("[dim]Preencha os dados do lote de cerveja[/dim]\n")
-    
+        
     manifest_id = Prompt.ask("[bold]ID do Manifesto[/bold]", default=f"manifest-{datetime.now().strftime('%Y%m%d%H%M%S')}")
     good_type = Prompt.ask("[bold]Tipo de Cerveja[/bold]", default="IPA Artesanal")
     quantity = float(Prompt.ask("[bold]Quantidade[/bold]", default="100"))
@@ -82,14 +96,18 @@ def create_manifest_interactive(base_url: str, private_key: str, public_key: str
     
     origin = Prompt.ask("[bold]Origem[/bold]", default="Douro, Portugal")
     sustainability = Prompt.ask("[bold]Certificação[/bold]", default="Produção Responsável")
-    creator = Prompt.ask("[bold]Produtor[/bold]", default="Cervejaria Portuguesa")
+    
+    # Derivar creator a partir da chave pública
+    creator = address_from_public_key(public_key)
+    console.print(f"[dim]Chave Pública: {public_key[:20]}...{public_key[-4:]}[/dim]")
+    console.print(f"[dim]Criador derivado: {creator}[/dim]\n")
     
     # Confirmar
     if not Confirm.ask("\n[bold]Confirmar criação de manifesto?[/bold]", default=True):
         console.print("[yellow]⊘ Cancelado[/yellow]")
         return
     
-    # Construir payload
+    # Construir payload com creator já derivado
     payload = {
         "manifest_id": manifest_id,
         "good_type": good_type,
@@ -98,17 +116,26 @@ def create_manifest_interactive(base_url: str, private_key: str, public_key: str
         "ingredients": ingredients,
         "origin": origin,
         "sustainability": sustainability,
-        "creator": creator,
+        "creator": creator,  # Preenchido aqui, não na API
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
     
     # Assinar
     console.print("\n[dim]Calculando hash SHA-256...[/dim]")
-    payload_hash = sha256_hex(payload)
+    console.print(f"[dim]Hashando payload...[/dim]")
+    console.print(f"[yellow]PAYLOAD: {payload}[/yellow]")
+    
+    # Log do JSON canônico
+    canonical = canonical_json(payload)
+    console.print(f"[yellow]CANONICAL JSON:\n{canonical}[/yellow]")
+    
+    payload_hash = sha256_hex(payload)  # payload é dict, não precisa .model_dump()
+    console.print(f"[yellow]PAYLOAD HASH: {payload_hash}[/yellow]")
     
     console.print(f"[dim]Hash: {payload_hash[:32]}...[/dim]")
     console.print("[dim]Assinando com ECDSA...[/dim]")
     signature = sign_hash(private_key[2:], payload_hash)  # Remove 0x para processar
+    console.print(f"[yellow]SIGNATURE: {signature}[/yellow]")
     
     body = {
         "payload": payload,
@@ -121,6 +148,8 @@ def create_manifest_interactive(base_url: str, private_key: str, public_key: str
     # Enviar
     console.print(f"\n[dim]Enviando para {base_url}/manifests...[/dim]")
     result = post_json(f"{base_url}/manifests", body)
+    
+    console.print(f"\n[dim]Logs guardados em: /tmp/blockchain_cli_debug.log[/dim]")
     
     if result:
         console.print("[green]✓ Manifesto criado com sucesso![/green]")
@@ -150,7 +179,9 @@ def create_record_interactive(base_url: str, private_key: str, public_key: str) 
     manifest_id = Prompt.ask("[bold]ID do Manifesto[/bold]")
     quantity = float(Prompt.ask("[bold]Quantidade[/bold]", default="50"))
     unit = Prompt.ask("[bold]Unidade[/bold]", default="litros")
-    user = Prompt.ask("[bold]Utilizador[/bold]", default="Operador 01")
+    # Derivar user a partir da chave pública (como criador no manifesto)
+    user = address_from_public_key(public_key)
+    console.print(f"[dim]Utilizador derivado: {user}[/dim]")
     notes = Prompt.ask("[bold]Notas[/bold] (opcional)", default="")
     
     # Confirmar
@@ -172,11 +203,19 @@ def create_record_interactive(base_url: str, private_key: str, public_key: str) 
     
     # Assinar
     console.print("\n[dim]Calculando hash SHA-256...[/dim]")
+    console.print(f"[yellow]PAYLOAD (RECORD): {payload}[/yellow]")
+    
+    # Log do JSON canônico
+    canonical = canonical_json(payload)
+    console.print(f"[yellow]CANONICAL JSON:\n{canonical}[/yellow]")
+    
     payload_hash = sha256_hex(payload)
+    console.print(f"[yellow]PAYLOAD HASH: {payload_hash}[/yellow]")
     
     console.print(f"[dim]Hash: {payload_hash[:32]}...[/dim]")
     console.print("[dim]Assinando com ECDSA...[/dim]")
     signature = sign_hash(private_key[2:], payload_hash)  # Remove 0x para processar
+    console.print(f"[yellow]SIGNATURE: {signature}[/yellow]")
     
     body = {
         "payload": payload,
@@ -189,6 +228,8 @@ def create_record_interactive(base_url: str, private_key: str, public_key: str) 
     # Enviar
     console.print(f"\n[dim]Enviando para {base_url}/records...[/dim]")
     result = post_json(f"{base_url}/records", body)
+    
+    console.print(f"\n[dim]Logs guardados em: /tmp/blockchain_cli_debug.log[/dim]")
     
     if result:
         console.print("[green]✓ Registro criado com sucesso![/green]")
@@ -206,7 +247,7 @@ def show_info() -> None:
     info_table.add_column("Descrição", style="white")
     
     info_table.add_row("Aplicação", "Rastreador de Cerveja Artesanal")
-    info_table.add_row("Blockchain", "Ethereum Mainnet")
+    info_table.add_row("Blockchain", "Ethereum Sepolia Testnet")
     info_table.add_row("Protocolo", "ECDSA + SHA-256")
     info_table.add_row("Armazenamento", "SQLite + Blockchain")
     info_table.add_row("API", "FastAPI em http://127.0.0.1:8000")

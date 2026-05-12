@@ -1,7 +1,5 @@
 """Esquemas de solicitação e resposta de manifesto."""
 
-from datetime import datetime
-
 from pydantic import BaseModel, Field
 
 from app.schemas.auth import SignatureEnvelope
@@ -18,8 +16,8 @@ class ManifestPayload(BaseModel):
     ingredients: list[str] = Field(..., description="Lista de ingredientes para rastreabilidade.")
     origin: str = Field(..., description="Local de origem (cervejaria/fazenda).")
     sustainability: str = Field(..., description='Carimbo de sustentabilidade, ex. "Responsible Barley".')
-    creator: str = Field(..., description="Endereço derivado da chave pública do criador.")
-    timestamp: datetime = Field(..., description="Timestamp ISO da emissão de manifesto.")
+    creator: str = Field(..., description="Endereço derivado da chave pública do criador (calculado no cliente).")
+    timestamp: str = Field(..., description="Timestamp ISO (2026-05-12T14:50:38.566021+00:00) da emissão de manifesto.")
 
 
 class ManifestCreateRequest(BaseModel):

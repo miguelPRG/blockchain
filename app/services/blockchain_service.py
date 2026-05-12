@@ -1,5 +1,4 @@
 """Integração Web3 para ancoragem de hash em Ethereum e verificação de prova."""
-
 from dataclasses import dataclass
 
 from web3 import Web3
@@ -7,6 +6,8 @@ from web3.exceptions import TransactionNotFound
 
 from app.core.settings import settings
 
+# ABI do contrato Solidity: contracts/Anchor.sol
+# Defines the interface for calling anchorHash() function on-chain
 ANCHOR_ABI = [
     {
         "inputs": [
@@ -32,16 +33,16 @@ class AnchorResult:
 
 def get_web3() -> Web3 | None:
     """Retornar um cliente Web3 se RPC estiver configurado, caso contrário None."""
-    if not settings.spolia_rpc_url:
+    if not settings.sepolia_rpc_url:
         return None
-    return Web3(Web3.HTTPProvider(settings.spolia_rpc_url))
+    return Web3(Web3.HTTPProvider(settings.sepolia_rpc_url))
 
 
 def check_connection_status() -> str:
     """Status de conectividade Sepolia legível para humanos para logs de inicialização."""
     client = get_web3()
     if client is None:
-        return "SPOLIA_RPC_URL not configured."
+        return "sepolia_rpc_url not configured."
     try:
         connected = client.is_connected()
         return "Connected to Mainnet RPC." if connected else "Unable to connect to Mainnet RPC."

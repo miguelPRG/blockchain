@@ -1,6 +1,7 @@
 """Auxiliares CRUD para manifesto."""
 
 import json
+from datetime import datetime
 
 from sqlalchemy.orm import Session
 
@@ -22,6 +23,9 @@ def create_manifest(
     tx_hash: str | None,
 ) -> Manifest:
     """Persistir manifesto e retornar entidade ORM."""
+    # Converter timestamp ISO string de volta para datetime
+    timestamp_dt = datetime.fromisoformat(payload.timestamp)
+    
     entity = Manifest(
         manifest_id=payload.manifest_id,
         good_type=payload.good_type,
@@ -31,7 +35,7 @@ def create_manifest(
         origin=payload.origin,
         sustainability=payload.sustainability,
         creator=payload.creator,
-        timestamp=payload.timestamp,
+        timestamp=timestamp_dt,
         payload_hash=payload_hash,
         signature=signature,
         public_key=public_key,

@@ -1,6 +1,5 @@
 """Esquemas de solicitação e resposta de registro."""
 
-from datetime import datetime
 from enum import Enum
 
 from pydantic import BaseModel, Field
@@ -27,7 +26,7 @@ class RecordPayload(BaseModel):
     quantity: float = Field(..., gt=0)
     unit: str
     user: str = Field(..., description="Endereço derivado da chave pública do usuário.")
-    timestamp: datetime
+    timestamp: str = Field(..., description="Timestamp ISO (2026-05-12T14:50:38.566021+00:00).")
     notes: str | None = Field(default=None, description="Notas operacionais opcionais.")
 
 

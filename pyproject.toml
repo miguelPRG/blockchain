@@ -10,10 +10,10 @@ authors = [
 ]
 
 dependencies = [
-    "fastapi[standard]==0.136.0",
+    "fastapi[standard]==0.136.1",
     "sqlalchemy==2.0.49",
-    "pydantic-settings==2.13.1",
-    "web3==7.15.0",
+    "pydantic-settings==2.14.1",
+    "web3==7.16.0",
     "ecdsa==0.19.2",
     "rich==15.0.0",
 ]
