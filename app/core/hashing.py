@@ -10,6 +10,11 @@ def canonical_json(data: dict[str, Any]) -> str:
     return json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
 
 
+def canonical_json_readable(data: dict[str, Any]) -> str:
+    """Serializar dados em forma JSON canônica mas UTF-8 legível (para logging apenas)."""
+    return json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
 def sha256_hex(data: dict[str, Any]) -> str:
     """Calcular digest SHA-256 da carga JSON canônica."""
     encoded = canonical_json(data).encode("utf-8")

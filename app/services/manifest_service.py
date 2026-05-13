@@ -2,24 +2,26 @@
 
 import logging
 import sys
+from datetime import datetime
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.core.hashing import sha256_hex, canonical_json
+from app.core.hashing import sha256_hex, canonical_json_readable
 from app.core.security import address_from_public_key, verify_signature
 from app.crud import manifest as manifest_crud
 from app.schemas.manifest import ManifestCreateRequest, ManifestResponse
-from app.services.blockchain_service import anchor_hash
+from app.services.blockchain_service import anchor_manifest
+from app.services.deploy_service import auto_deploy_if_needed
 
 logger = logging.getLogger(__name__)
 
 
 def create_manifest(db: Session, request: ManifestCreateRequest) -> ManifestResponse:
-    """Validar assinaturas, fazer hash de carga, armazenar manifesto e ancorar hash."""
+    """Validar assinaturas, fazer hash de carga, armazenar manifesto e ancorar na blockchain."""
     payload = request.payload
     if manifest_crud.get_manifest(db, payload.manifest_id):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Manifest ID already exists.")
-
+    
     # Verificar que creator foi preenchido pelo cliente
     if not payload.creator:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Creator must be provided in payload.")
@@ -34,11 +36,12 @@ def create_manifest(db: Session, request: ManifestCreateRequest) -> ManifestResp
 
     # Hash já foi calculado corretamente no cliente (com creator preenchido)
     # Usar o mesmo método que a CLI: converter para dict antes de calcular hash
-    payload_dict = payload.model_dump()
+    # IMPORTANTE: usar mode='json' para serializar Enums como strings
+    payload_dict = payload.model_dump(mode='json')
 
-    # Log do JSON canônico
-    canonical = canonical_json(payload_dict)
-    sys.stderr.write(f"\n[API] CANONICAL JSON:\n{canonical}\n")
+    # Log do JSON canônico (usar versão legível para display)
+    canonical_readable = canonical_json_readable(payload_dict)
+    sys.stderr.write(f"\n[API] CANONICAL JSON:\n{canonical_readable}\n")
     sys.stderr.flush()
     
     payload_hash = sha256_hex(payload_dict)
@@ -54,7 +57,27 @@ def create_manifest(db: Session, request: ManifestCreateRequest) -> ManifestResp
         sys.stderr.flush()
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid ECDSA signature.")
 
-    anchor = anchor_hash(payload_hash, payload.manifest_id)
+    # Garantir que contrato está deploiado antes de ancorar
+    if not auto_deploy_if_needed(verbose=True):
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to deploy contract.")
+
+    # Converter timestamp ISO para Unix timestamp
+    timestamp_dt = datetime.fromisoformat(payload.timestamp)
+    unix_timestamp = int(timestamp_dt.timestamp())
+
+    # Ancorar manifesto completo na blockchain
+    anchor = anchor_manifest(
+        payload_hash=payload_hash,
+        manifest_id=payload.manifest_id,
+        good_type=payload.good_type,
+        quantity=int(payload.quantity),
+        unit=payload.unit,
+        ingredients=payload.ingredients,
+        origin=payload.origin,
+        sustainability=payload.sustainability,
+        timestamp=unix_timestamp,
+    )
+    
     manifest_crud.create_manifest(
         db=db,
         payload=payload,

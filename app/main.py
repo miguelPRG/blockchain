@@ -12,10 +12,9 @@ from app.routers.records import router as records_router
 from app.routers.verification import router as verification_router
 from app.services.blockchain_service import check_connection_status
 
-
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    """Inicializar esquema de DB e imprimir status de conexão Sepolia na inicialização."""
+    """Inicializar esquema de DB, deployment automático, e imprimir status de conexão."""
     Base.metadata.create_all(bind=engine)
     rprint(f"[bold cyan]Iniciando:[/bold cyan] {settings.app_name} v{settings.app_version}")
     rprint(f"[bold yellow]Network Status:[/bold yellow] {check_connection_status()}")
@@ -34,9 +33,8 @@ async def lifespan(_: FastAPI):
             rprint(f"[bold red]✗ Erro na chave privada:[/bold red] {e}")
     else:
         rprint(f"[bold red]✗ PRIVATE_KEY_FOR_DEPLOY não configurada[/bold red]")
-    
-    yield
 
+    yield
 
 app = FastAPI(
     title=settings.app_name,

@@ -5,12 +5,13 @@ import sys
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.core.hashing import sha256_hex, canonical_json
+from app.core.hashing import sha256_hex, canonical_json, canonical_json_readable
 from app.core.security import address_from_public_key, verify_signature
 from app.crud import manifest as manifest_crud
 from app.crud import record as record_crud
 from app.schemas.record import RecordCreateRequest, RecordResponse, RecordType
 from app.services.blockchain_service import anchor_hash
+from app.services.deploy_service import auto_deploy_if_needed
 
 logger = logging.getLogger(__name__)
 
@@ -28,14 +29,15 @@ def create_record(db: Session, request: RecordCreateRequest) -> RecordResponse:
 
     # Hash já foi calculado corretamente no cliente
     # Usar o mesmo método que a CLI: converter para dict antes de calcular hash
-    payload_dict = payload.model_dump()
+    # IMPORTANTE: usar mode='json' para serializar Enums como strings
+    payload_dict = payload.model_dump(mode='json')
     logger.debug("=== RECORD_SERVICE PAYLOAD ===")
     logger.debug(payload_dict)
     logger.debug("==============================")
     
-    # Log do JSON canônico
-    canonical = canonical_json(payload_dict)
-    sys.stderr.write(f"\n[API RECORD] CANONICAL JSON:\n{canonical}\n")
+    # Log do JSON canônico (usar versão legível para display)
+    canonical_readable = canonical_json_readable(payload_dict)
+    sys.stderr.write(f"\n[API RECORD] CANONICAL JSON:\n{canonical_readable}\n")
     sys.stderr.flush()
     
     payload_hash = sha256_hex(payload_dict)
@@ -50,6 +52,10 @@ def create_record(db: Session, request: RecordCreateRequest) -> RecordResponse:
         sys.stderr.write(f"[API RECORD] VERIFICATION FAILED!\n")
         sys.stderr.flush()
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid ECDSA signature.")
+
+    # Garantir que contrato está deploiado antes de ancorar
+    if not auto_deploy_if_needed(verbose=False):
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to deploy contract.")
 
     available = record_crud.get_available_stock(db, payload.manifest_id)
     if payload.record_type in {RecordType.TRANSFER, RecordType.DELIVERY} and payload.quantity > available:
