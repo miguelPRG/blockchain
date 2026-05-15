@@ -54,6 +54,9 @@ def auto_deploy_if_needed(verbose: bool = False) -> bool:
             rprint("[dim]📝 Atualizando .env...[/dim]")
         update_env_file(contract_address, env_file)
         
+        # Recarregar settings em tempo de execução
+        settings.reload_contract_address()
+        
         if verbose:
             rprint(f"[green]✅ Contrato publicado: {contract_address}[/green]")
         
@@ -170,20 +173,20 @@ def deploy_contract(compiled: dict) -> str:
         tx = Contract.constructor().build_transaction({
             "from": account.address,
             "nonce": nonce,
-            "gas": 1500000,  # Fallback inicial (otimizado: ~1.1M-1.3M real, 1.5M seguro)
+            "gas": 3000000,  # Limite inicial aumentado (deployment pode exigir mais)
             "gasPrice": gas_price,
         })
         
         logger.debug("Estimando gas")
         try:
             estimated_gas = w3.eth.estimate_gas(tx)
-            tx["gas"] = estimated_gas + 50000  # Margem de segurança 6%
+            tx["gas"] = estimated_gas + 100000  # Margem de segurança
             logger.debug(f"Gas estimado: {tx['gas']}")
         except Exception as e:
-            logger.warning(f"Falha ao estimar gas: {e}. Usando fallback realista")
-            # Fallback: estima conservadora baseada em contrato similar
-            # Anchor.sol = ~1.1M-1.3M com struct otimizado
-            tx["gas"] = 1500000
+            logger.warning(f"Falha ao estimar gas: {e}. Usando fallback: 3M")
+            # Fallback: limite conservador para contrato com arrays e eventos
+            # Anchor.sol = ~1.5M-2M real, 3M seguro para Sepolia
+            tx["gas"] = 3000000
         
         rprint("\n[bold]🔐 Assinando e enviando transação...[/bold]")
         logger.info("Assinando transação")

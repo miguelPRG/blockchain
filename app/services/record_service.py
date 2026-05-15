@@ -1,41 +1,49 @@
-"""Lógica de negócios para criação segura de registro e verificações de estoque."""
+"""Lógica de negócios para criação de registo blockchain-only."""
 
 import logging
 import sys
+from datetime import datetime
 from fastapi import HTTPException, status
-from sqlalchemy.orm import Session
 
-from app.core.hashing import sha256_hex, canonical_json, canonical_json_readable
-from app.core.security import address_from_public_key, verify_signature
-from app.crud import manifest as manifest_crud
-from app.crud import record as record_crud
+from app.core.hashing import sha256_hex, canonical_json_readable
+from app.core.security import verify_signature
 from app.schemas.record import RecordCreateRequest, RecordResponse, RecordType
-from app.services.blockchain_service import anchor_hash
+from app.services.blockchain_service import create_record as create_record_on_chain, manifest_exists
 from app.services.deploy_service import auto_deploy_if_needed
 
 logger = logging.getLogger(__name__)
 
 
-def create_record(db: Session, request: RecordCreateRequest) -> RecordResponse:
-    """Validar assinatura, aplicar regras de estoque, armazenar registro e ancorar hash."""
+def create_record(request: RecordCreateRequest) -> RecordResponse:
+    """
+    Criar registo direto na blockchain com validação de manifesto.
+    
+    Validações:
+    - Manifesto DEVE existir na blockchain
+    - Assinatura ECDSA válida
+    - Contrato está deploiado
+    
+    Nota: User é derivado automaticamente do msg.sender (chave privada do backend)
+    """
     payload = request.payload
-    manifest = manifest_crud.get_manifest(db, payload.manifest_id)
-    if manifest is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Manifest not found.")
+    logger.info(f"Criando registo para manifesto: {payload.manifest_id}")
+    
+    # Verificar que manifesto existe na blockchain
+    if not manifest_exists(payload.manifest_id):
+        logger.error(f"Manifesto não encontrado: {payload.manifest_id}")
+        sys.stderr.write(f"[API RECORD] Manifesto não encontrado na blockchain: {payload.manifest_id}\n")
+        sys.stderr.flush()
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Manifest '{payload.manifest_id}' does not exist on blockchain. Create it first."
+        )
 
-    derived_address = address_from_public_key(request.auth.public_key)
-    if payload.user.lower() != derived_address.lower():
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User address/public key mismatch.")
-
-    # Hash já foi calculado corretamente no cliente
-    # Usar o mesmo método que a CLI: converter para dict antes de calcular hash
-    # IMPORTANTE: usar mode='json' para serializar Enums como strings
+    # Calcular hash do payload
     payload_dict = payload.model_dump(mode='json')
-    logger.debug("=== RECORD_SERVICE PAYLOAD ===")
+    logger.debug("=== RECORD SERVICE PAYLOAD ===")
     logger.debug(payload_dict)
     logger.debug("==============================")
     
-    # Log do JSON canônico (usar versão legível para display)
     canonical_readable = canonical_json_readable(payload_dict)
     sys.stderr.write(f"\n[API RECORD] CANONICAL JSON:\n{canonical_readable}\n")
     sys.stderr.flush()
@@ -47,32 +55,40 @@ def create_record(db: Session, request: RecordCreateRequest) -> RecordResponse:
     sys.stderr.write(f"[API RECORD] SIGNATURE: {request.auth.signature}\n")
     sys.stderr.flush()
     
+    # Verificar assinatura
     if not verify_signature(request.auth.public_key, payload_hash, request.auth.signature):
         logger.error(f"Signature verification failed for hash: {payload_hash}")
         sys.stderr.write(f"[API RECORD] VERIFICATION FAILED!\n")
         sys.stderr.flush()
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid ECDSA signature.")
 
-    # Garantir que contrato está deploiado antes de ancorar
+    # Garantir que contrato está deploiado
     if not auto_deploy_if_needed(verbose=False):
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to deploy contract.")
 
-    available = record_crud.get_available_stock(db, payload.manifest_id)
-    if payload.record_type in {RecordType.TRANSFER, RecordType.DELIVERY} and payload.quantity > available:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Insufficient stock. Available={available}, requested={payload.quantity}.",
-        )
+    # Converter timestamp ISO para Unix timestamp
+    timestamp_dt = datetime.fromisoformat(payload.timestamp)
+    unix_timestamp = int(timestamp_dt.timestamp())
 
-    anchor = anchor_hash(payload_hash, payload.manifest_id)
-    record_crud.create_record(
-        db=db,
-        payload=payload,
+    # Criar registo na blockchain
+    anchor = create_record_on_chain(
+        record_id=payload.record_id,
+        manifest_id=payload.manifest_id,
         payload_hash=payload_hash,
-        signature=request.auth.signature,
-        public_key=request.auth.public_key,
-        tx_hash=anchor.tx_hash,
+        record_type=payload.record_type.value,
+        quantity=int(payload.quantity),
+        unit=payload.unit,
+        timestamp=unix_timestamp,
     )
+    
+    if not anchor.anchored:
+        logger.error(f"Falha ao criar registo: {anchor.reason}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create record on blockchain: {anchor.reason}"
+        )
+    
+    logger.info(f"✅ Registo criado com sucesso: TX {anchor.tx_hash}")
     return RecordResponse(
         payload=payload,
         payload_hash=payload_hash,

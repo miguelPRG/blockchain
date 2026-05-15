@@ -16,7 +16,6 @@ class ManifestPayload(BaseModel):
     ingredients: list[str] = Field(..., description="Lista de ingredientes para rastreabilidade.")
     origin: str = Field(..., description="Local de origem (cervejaria/fazenda).")
     sustainability: str = Field(..., description='Carimbo de sustentabilidade, ex. "Responsible Barley".')
-    creator: str = Field(..., description="Endereço derivado da chave pública do criador (calculado no cliente).")
     timestamp: str = Field(..., description="Timestamp ISO (2026-05-12T14:50:38.566021+00:00) da emissão de manifesto.")
 
 

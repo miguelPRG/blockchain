@@ -12,7 +12,7 @@ from rich.panel import Panel
 from rich.prompt import Prompt, Confirm
 from rich.table import Table
 from app.core.hashing import sha256_hex
-from app.core.security import sign_hash, get_public_key_from_private, address_from_public_key
+from app.core.security import sign_hash, get_public_key_from_private
 from app.core.settings import settings
 from app.core.hashing import canonical_json
 
@@ -48,9 +48,7 @@ def load_keys() -> tuple[str, str]:
         public_key = f"0x{public_key}"
         
         console.print(f"[green]✓ Chaves carregadas do .env[/green]")
-        console.print(f"[dim]Chave Privada: {private_key[:10]}...{private_key[-4:]}[/dim]")
-        console.print(f"[dim]Chave Pública: {public_key[:10]}...{public_key[-4:]}[/dim]\n")
-        
+   
         return private_key, public_key
     except Exception as e:
         console.print(f"[red]✗ Erro ao carregar chaves:[/red] {e}")
@@ -64,6 +62,13 @@ def post_json(url: str, payload: dict) -> dict:
         req.add_header("Content-Type", "application/json")
         with urlrequest.urlopen(req) as resp:  # noqa: S310
             return json.loads(resp.read().decode("utf-8"))
+    except urlrequest.HTTPError as e:
+        try:
+            error_detail = json.loads(e.read().decode("utf-8"))
+            console.print(f"[red]✗ Erro HTTP {e.code}:[/red] {error_detail.get('detail', str(error_detail))}")
+        except Exception:
+            console.print(f"[red]✗ Erro HTTP {e.code}:[/red] {e.reason}")
+        return {}
     except Exception as e:
         console.print(f"[red]✗ Erro na requisição:[/red] {e}")
         return {}
@@ -80,8 +85,8 @@ def show_header():
     ))
 
 
-def create_manifest_interactive(base_url: str, private_key: str, public_key: str) -> None:
-    """Criar manifesto de forma interativa."""
+def create_manifest_interactive(base_url: str, private_key: str, public_key: str) -> tuple[str | None, str | None]:
+    """Criar manifesto de forma interativa. Retorna (manifest_id, payload_hash)."""
     console.print("\n[bold cyan]📋 Criar Novo Manifesto[/bold cyan]")
     console.print("[dim]Preencha os dados do lote de cerveja[/dim]\n")
         
@@ -97,17 +102,12 @@ def create_manifest_interactive(base_url: str, private_key: str, public_key: str
     origin = Prompt.ask("[bold]Origem[/bold]", default="Douro, Portugal")
     sustainability = Prompt.ask("[bold]Certificação[/bold]", default="Produção Responsável")
     
-    # Derivar creator a partir da chave pública
-    creator = address_from_public_key(public_key)
-    console.print(f"[dim]Chave Pública: {public_key[:20]}...{public_key[-4:]}[/dim]")
-    console.print(f"[dim]Criador derivado: {creator}[/dim]\n")
-    
     # Confirmar
     if not Confirm.ask("\n[bold]Confirmar criação de manifesto?[/bold]", default=True):
         console.print("[yellow]⊘ Cancelado[/yellow]")
-        return
+        return None, None
     
-    # Construir payload com creator já derivado
+    # Construir payload
     payload = {
         "manifest_id": manifest_id,
         "good_type": good_type,
@@ -116,14 +116,12 @@ def create_manifest_interactive(base_url: str, private_key: str, public_key: str
         "ingredients": ingredients,
         "origin": origin,
         "sustainability": sustainability,
-        "creator": creator,  # Preenchido aqui, não na API
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
     
     # Assinar
     console.print("\n[dim]Calculando hash SHA-256...[/dim]")
-    console.print(f"[dim]Hashando payload...[/dim]")
-    console.print(f"[yellow]PAYLOAD: {payload}[/yellow]")
+    console.print(f"[yellow]PAYLOAD: {json.dumps(payload, ensure_ascii=False, indent=2)}[/yellow]")
     
     # Log do JSON canônico
     canonical = canonical_json(payload)
@@ -154,12 +152,14 @@ def create_manifest_interactive(base_url: str, private_key: str, public_key: str
     if result:
         console.print("[green]✓ Manifesto criado com sucesso![/green]")
         console.print(Panel(json.dumps(result, indent=2), title="[bold green]Resposta[/bold green]", border_style="green"))
+        return manifest_id, payload_hash
     else:
         console.print("[red]✗ Erro ao criar manifesto[/red]")
+        return None, None
 
 
-def create_record_interactive(base_url: str, private_key: str, public_key: str) -> None:
-    """Criar registro de operação de forma interativa."""
+def create_record_interactive(base_url: str, private_key: str, public_key: str, last_manifest_id: str | None = None) -> str | None:
+    """Criar registro de operação de forma interativa. Retorna record_id."""
     console.print("\n[bold cyan]📝 Criar Novo Registro de Operação[/bold cyan]")
     console.print("[dim]Registre uma transformação no lote[/dim]\n")
     
@@ -176,18 +176,24 @@ def create_record_interactive(base_url: str, private_key: str, public_key: str) 
     type_map = {"1": "PRODUCED", "2": "TRANSFER", "3": "RECEIVED", "4": "DELIVERY"}
     record_type = type_map[type_choice]
     
-    manifest_id = Prompt.ask("[bold]ID do Manifesto[/bold]")
+    # Pedir o ID do manifesto
+    console.print(f"\n[bold]Manifesto:[/bold]")
+    if last_manifest_id:
+        console.print(f"[dim]Último ID: {last_manifest_id}[/dim]")
+    manifest_id = Prompt.ask("[bold]ID do Manifesto[/bold]", default=last_manifest_id or "")
+    
+    if not manifest_id:
+        console.print("[red]✗ Erro: ID do manifesto é obrigatório[/red]")
+        return None
+    
     quantity = float(Prompt.ask("[bold]Quantidade[/bold]", default="50"))
     unit = Prompt.ask("[bold]Unidade[/bold]", default="litros")
-    # Derivar user a partir da chave pública (como criador no manifesto)
-    user = address_from_public_key(public_key)
-    console.print(f"[dim]Utilizador derivado: {user}[/dim]")
     notes = Prompt.ask("[bold]Notas[/bold] (opcional)", default="")
     
     # Confirmar
     if not Confirm.ask("\n[bold]Confirmar criação de registro?[/bold]", default=True):
         console.print("[yellow]⊘ Cancelado[/yellow]")
-        return
+        return None
     
     # Construir payload
     payload = {
@@ -196,7 +202,6 @@ def create_record_interactive(base_url: str, private_key: str, public_key: str) 
         "manifest_id": manifest_id,
         "quantity": quantity,
         "unit": unit,
-        "user": user,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "notes": notes,
     }
@@ -234,8 +239,11 @@ def create_record_interactive(base_url: str, private_key: str, public_key: str) 
     if result:
         console.print("[green]✓ Registro criado com sucesso![/green]")
         console.print(Panel(json.dumps(result, indent=2), title="[bold green]Resposta[/bold green]", border_style="green"))
+        return record_id
     else:
         console.print("[red]✗ Erro ao criar registro[/red]")
+    
+    return None
 
 
 def show_info() -> None:
@@ -249,7 +257,7 @@ def show_info() -> None:
     info_table.add_row("Aplicação", "Rastreador de Cerveja Artesanal")
     info_table.add_row("Blockchain", "Ethereum Sepolia Testnet")
     info_table.add_row("Protocolo", "ECDSA + SHA-256")
-    info_table.add_row("Armazenamento", "SQLite + Blockchain")
+    info_table.add_row("Armazenamento", "Blockchain-Only (Única Fonte de Verdade)")
     info_table.add_row("API", "FastAPI em http://127.0.0.1:8000")
     
     console.print(info_table)
@@ -258,8 +266,15 @@ def show_info() -> None:
     console.print("  • Nunca partilhe sua chave privada")
     console.print("  • Use uma chave privada diferente para cada operação")
     console.print("  • Mantenha o .env seguro (nunca em Git)")
+    
+    console.print("\n[bold cyan]🔍 Debugar:[/bold cyan]")
+    console.print("  • Recuperar manifesto: [cyan]http://127.0.0.1:8000/manifests/{manifest_id}[/cyan]")
+    console.print("  • Recuperar registo: [cyan]http://127.0.0.1:8000/records/{record_id}[/cyan]")
+    console.print("  • Configuração: [cyan]http://127.0.0.1:8000/config/contract-address[/cyan]")
+    console.print("  • Docs: [cyan]http://127.0.0.1:8000/docs[/cyan]")
+    console.print("  • Explorer Sepolia: [cyan]https://sepolia.etherscan.io[/cyan]")
 
-def show_menu(base_url: str, private_key: str, public_key: str) -> None:
+def show_menu(base_url: str, private_key: str, public_key: str, last_manifest_id: str | None = None, last_manifest_hash: str | None = None) -> None:
     """Mostrar menu principal interativo."""
     show_header()
     
@@ -269,12 +284,19 @@ def show_menu(base_url: str, private_key: str, public_key: str) -> None:
     console.print("  [cyan]3[/cyan] - Informações do Sistema")
     console.print("  [cyan]4[/cyan] - Sair")
     
+    if last_manifest_id:
+        console.print(f"\n[dim]Último manifesto: {last_manifest_id}[/dim]")
+    
     choice = Prompt.ask("\nEscolha", choices=["1", "2", "3", "4"], default="1")
     
     if choice == "1":
-        create_manifest_interactive(base_url, private_key, public_key)
+        manifest_id, manifest_hash = create_manifest_interactive(base_url, private_key, public_key)
+        if manifest_id:
+            last_manifest_id = manifest_id
     elif choice == "2":
-        create_record_interactive(base_url, private_key, public_key)
+        record_id = create_record_interactive(base_url, private_key, public_key, last_manifest_id)
+        if record_id:
+            last_manifest_id = last_manifest_id  # Manter o ID do manifesto
     elif choice == "3":
         show_info()
     elif choice == "4":
@@ -283,7 +305,7 @@ def show_menu(base_url: str, private_key: str, public_key: str) -> None:
     
     # Voltar ao menu
     input("\n[dim]Pressione Enter para continuar...[/dim]")
-    show_menu(base_url, private_key, public_key)
+    show_menu(base_url, private_key, public_key, last_manifest_id, None)
 
 
 def main():
@@ -291,10 +313,9 @@ def main():
     # Carregar chaves do .env
     private_key, public_key = load_keys()
     
-    base_url = Prompt.ask(
-        "[bold]URL da API[/bold]",
-        default="http://127.0.0.1:8000"
-    )
+    # Servidor de API sempre em localhost
+    base_url = "http://127.0.0.1:8000"
+    console.print(f"[dim]API: {base_url}[/dim]\n")
     
     try:
         show_menu(base_url, private_key, public_key)

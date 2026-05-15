@@ -22,10 +22,9 @@ class RecordPayload(BaseModel):
 
     record_id: str = Field(..., description="ID de registro único.")
     record_type: RecordType
-    manifest_id: str
+    manifest_id: str = Field(..., description="ID do manifesto (deve existir na blockchain).")
     quantity: float = Field(..., gt=0)
     unit: str
-    user: str = Field(..., description="Endereço derivado da chave pública do usuário.")
     timestamp: str = Field(..., description="Timestamp ISO (2026-05-12T14:50:38.566021+00:00).")
     notes: str | None = Field(default=None, description="Notas operacionais opcionais.")
 
