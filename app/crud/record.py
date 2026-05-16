@@ -1,7 +1,5 @@
 """Auxiliares CRUD para registro incluindo cálculo de estoque."""
 
-from datetime import datetime
-
 from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
@@ -12,28 +10,16 @@ from app.schemas.record import RecordPayload, RecordType
 def create_record(
     db: Session,
     payload: RecordPayload,
-    payload_hash: str,
-    signature: str,
-    public_key: str,
-    tx_hash: str | None,
 ) -> Record:
     """Persistir registro assinado no banco de dados."""
-    # Converter timestamp ISO string de volta para datetime
-    timestamp_dt = datetime.fromisoformat(payload.timestamp)
-    
     entity = Record(
         record_id=payload.record_id,
         record_type=payload.record_type.value,
         manifest_id=payload.manifest_id,
         quantity=payload.quantity,
         unit=payload.unit,
-        user=payload.user,
-        timestamp=timestamp_dt,
+        timestamp=payload.timestamp,
         notes=payload.notes,
-        payload_hash=payload_hash,
-        signature=signature,
-        public_key=public_key,
-        tx_hash=tx_hash,
     )
     db.add(entity)
     db.commit()

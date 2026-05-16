@@ -5,6 +5,7 @@ from eth_account import Account
 from fastapi import FastAPI
 from rich import print as rprint
 
+from app.core.database import init_db
 from app.core.settings import settings
 from app.routers.health import router as health_router
 from app.routers.manifests import router as manifests_router
@@ -18,7 +19,12 @@ async def lifespan(_: FastAPI):
     """Inicializar status de conexão blockchain e wallet."""
     rprint(f"[bold cyan]Iniciando:[/bold cyan] {settings.app_name} v{settings.app_version}")
     rprint(f"[bold yellow]Blockchain Status:[/bold yellow] {check_connection_status()}")
-    rprint(f"[bold green]⚡ Modo:[/bold green] Blockchain-only (sem SQLAlchemy)")
+    
+    # Inicializar DB
+    init_db()
+    rprint(f"[bold green]✓ Banco de Dados:[/bold green] Inicializado SQLite (Repositório Off-chain)")
+    
+    rprint(f"[bold green]⚡ Modo:[/bold green] Híbrido (SQLite + Blockchain)")
     
     # Verificar chave privada
     private_key = settings.private_key_for_deploy
@@ -41,8 +47,9 @@ app = FastAPI(
     title=settings.app_name,
     version=settings.app_version,
     description=(
-        "API de cadeia de suprimentos blockchain-only para Cerveja Artesanal. "
-        "Manifestos e registos são armazenados direto na blockchain Sepolia (única fonte de verdade)."
+        "API de cadeia de suprimentos para Cerveja Artesanal. "
+        "Manifestos e registos são armazenados no Repositório Off-chain, enquanto "
+        "apenas os hashes criptográficos são ancorados na blockchain Sepolia para prova de integridade."
     ),
     lifespan=lifespan,
 )

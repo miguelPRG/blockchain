@@ -15,13 +15,33 @@ logger = logging.getLogger(__name__)
 
 
 def is_contract_deployed() -> bool:
-    """Verificação simples (interna) se contrato está publicado."""
+    """Verificação se contrato está publicado e no formato esperado (com itemId)."""
     try:
         w3 = Web3(Web3.HTTPProvider(settings.sepolia_rpc_url))
         if not w3.is_connected():
             return False
         code = w3.eth.get_code(settings.contract_address)
-        return code and len(code) > 2
+        if not code or len(code) <= 2:
+            return False
+
+        # Valida versão esperada do contrato: getAnchorDetails com itemId (4 retornos).
+        details_v2_abi = [
+            {
+                "inputs": [{"internalType": "bytes32", "name": "_payloadHash", "type": "bytes32"}],
+                "name": "getAnchorDetails",
+                "outputs": [
+                    {"internalType": "bool", "name": "exists", "type": "bool"},
+                    {"internalType": "uint256", "name": "timestamp", "type": "uint256"},
+                    {"internalType": "address", "name": "creator", "type": "address"},
+                    {"internalType": "string", "name": "itemId", "type": "string"},
+                ],
+                "stateMutability": "view",
+                "type": "function",
+            }
+        ]
+        contract = w3.eth.contract(address=Web3.to_checksum_address(settings.contract_address), abi=details_v2_abi)
+        contract.functions.getAnchorDetails(bytes(32)).call()
+        return True
     except Exception:
         return False
 

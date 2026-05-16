@@ -13,7 +13,7 @@ router = APIRouter(prefix="/verify", tags=["Verification"])
     response_model=VerificationResponse,
     summary="Verificar integridade de carga e evidência de blockchain",
     description=(
-        "Recalcula hash de carga, verifica assinatura ECDSA e verifica recibo tx Mainnet. "
+        "Recalcula hash de carga, decodifica a transação anchorHash e compara a hash ancorada. "
         "Suporta validação independente sem confiar no gerenciador de cadeia de suprimentos."
     ),
 )

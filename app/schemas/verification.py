@@ -7,17 +7,24 @@ class VerificationRequest(BaseModel):
     """Solicitação para verificação de integridade independente."""
 
     payload: dict = Field(..., description="Objeto de carga bruta a ser recomputado e verificado.")
-    public_key: str = Field(..., description="Chave pública do signatário em hex.")
-    signature: str = Field(..., description="Assinatura ECDSA em hex.")
-    expected_hash: str = Field(..., description="Hash armazenado fora da cadeia.")
-    tx_hash: str | None = Field(default=None, description="Hash de transação blockchain para prova ancorada.")
+    tx_hash: str | None = Field(default=None, description="Hash da transação blockchain anchorHash.")
+    item_id: str | None = Field(default=None, description="ID esperado do manifesto ou registo.")
+    public_key: str | None = Field(default=None, description="Chave pública do signatário em hex.")
+    signature: str | None = Field(default=None, description="Assinatura ECDSA em hex.")
+    expected_hash: str | None = Field(default=None, description="Hash esperado para comparação local opcional.")
 
 
 class VerificationResponse(BaseModel):
-    """Resultado detalhado de verificação."""
+    """Resultado de verificação local e blockchain."""
 
+    payload: dict
     recomputed_hash: str
-    hash_matches: bool
-    signature_valid: bool
-    blockchain_proof_valid: bool
+    hash_matches: bool | None
+    signature_valid: bool | None
+    blockchain_payload_hash: str | None = None
+    blockchain_hash_matches: bool | None = None
+    blockchain_tx_valid: bool | None = None
+    blockchain_item_id: str | None = None
+    blockchain_item_matches: bool | None = None
+    block_number: int | None = None
     overall_valid: bool
