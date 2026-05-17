@@ -9,13 +9,15 @@ from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 
 from app.core.hashing import sha256_hex, canonical_json_readable
-from app.core.security import verify_signature
+from app.core.security import verify_signature, address_from_public_key, get_private_key_from_public
 from app.schemas.manifest import ManifestCreateRequest, ManifestResponse
 from app.models.manifest import Manifest as ManifestModel
 from app.services.blockchain_service import anchor_hash, decode_anchor_tx
 from app.services.deploy_service import auto_deploy_if_needed
 
 logger = logging.getLogger(__name__)
+
+MANIFEST_CREATOR_ROLE = "PRODUCER"
 
 
 def create_manifest(db: Session, request: ManifestCreateRequest) -> ManifestResponse:
@@ -29,6 +31,19 @@ def create_manifest(db: Session, request: ManifestCreateRequest) -> ManifestResp
     - Hash é ancorado na blockchain
     """
     payload = request.payload
+    creator_address = address_from_public_key(request.auth.public_key)
+
+    if payload.creator != creator_address:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Manifest creator does not match the public key.",
+        )
+
+    if request.auth.role != MANIFEST_CREATOR_ROLE:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Manifest creation requires PRODUCER role.",
+        )
 
     # Verificar se manifesto já existe no repositório local
     existing = db.query(ManifestModel).filter(ManifestModel.manifest_id == payload.manifest_id).first()
@@ -61,10 +76,12 @@ def create_manifest(db: Session, request: ManifestCreateRequest) -> ManifestResp
     unix_timestamp = int(timestamp_dt.timestamp())
 
     # Ancorar o hash na blockchain
+    signer_priv = get_private_key_from_public(request.auth.public_key)
     anchor = anchor_hash(
         payload_hash=payload_hash,
         timestamp=unix_timestamp,
         item_id=payload.manifest_id,
+        signer_private_key=signer_priv,
     )
     
     if not anchor.anchored:
@@ -99,7 +116,12 @@ def create_manifest(db: Session, request: ManifestCreateRequest) -> ManifestResp
         ingredients_json=json.dumps(payload.ingredients),
         origin=payload.origin,
         sustainability=payload.sustainability,
+        creator=payload.creator,
         timestamp=payload.timestamp,
+        payload_hash=payload_hash,
+        signature=request.auth.signature,
+        public_key=request.auth.public_key,
+        tx_hash=anchor.tx_hash,
     )
 
     try:

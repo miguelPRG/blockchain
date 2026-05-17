@@ -10,6 +10,10 @@ from app.schemas.record import RecordPayload, RecordType
 def create_record(
     db: Session,
     payload: RecordPayload,
+    payload_hash: str,
+    signature: str,
+    public_key: str,
+    tx_hash: str,
 ) -> Record:
     """Persistir registro assinado no banco de dados."""
     entity = Record(
@@ -18,8 +22,13 @@ def create_record(
         manifest_id=payload.manifest_id,
         quantity=payload.quantity,
         unit=payload.unit,
+        user=payload.user,
         timestamp=payload.timestamp,
         notes=payload.notes,
+        payload_hash=payload_hash,
+        signature=signature,
+        public_key=public_key,
+        tx_hash=tx_hash,
     )
     db.add(entity)
     db.commit()

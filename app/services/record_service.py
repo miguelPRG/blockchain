@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 
 from app.core.hashing import sha256_hex, canonical_json_readable
-from app.core.security import verify_signature
+from app.core.security import verify_signature, address_from_public_key, get_private_key_from_public
 from app.schemas.record import RecordCreateRequest, RecordResponse, RecordType
 from app.models.manifest import Manifest as ManifestModel
 from app.models.record import Record as RecordModel
@@ -16,6 +16,27 @@ from app.services.blockchain_service import anchor_hash, decode_anchor_tx
 from app.services.deploy_service import auto_deploy_if_needed
 
 logger = logging.getLogger(__name__)
+
+ROLE_ALLOWED_RECORD_TYPES = {
+    "PRODUCER": {RecordType.PRODUCED},
+    "TRANSPORTER": {RecordType.TRANSFER, RecordType.DELIVERY},
+    "RECEIVER": {RecordType.RECEIVED},
+}
+
+
+def _available_stock(db: Session, manifest_id: str) -> float:
+    records = db.query(RecordModel).filter(RecordModel.manifest_id == manifest_id).all()
+    incoming = sum(
+        record.quantity
+        for record in records
+        if record.record_type in {RecordType.PRODUCED.value, RecordType.RECEIVED.value}
+    )
+    outgoing = sum(
+        record.quantity
+        for record in records
+        if record.record_type in {RecordType.TRANSFER.value, RecordType.DELIVERY.value}
+    )
+    return float(incoming - outgoing)
 
 
 def create_record(db: Session, request: RecordCreateRequest) -> RecordResponse:
@@ -31,6 +52,27 @@ def create_record(db: Session, request: RecordCreateRequest) -> RecordResponse:
     """
     payload = request.payload
     logger.info(f"Criando registo para manifesto: {payload.manifest_id}")
+    user_address = address_from_public_key(request.auth.public_key)
+
+    if payload.user != user_address:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Record user does not match the public key.",
+        )
+
+    if request.auth.role not in ROLE_ALLOWED_RECORD_TYPES:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Invalid role for record creation.",
+        )
+
+    if payload.record_type not in ROLE_ALLOWED_RECORD_TYPES[request.auth.role]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                f"Role '{request.auth.role}' cannot create record type '{payload.record_type.value}'."
+            ),
+        )
     
     # Verificar se o registo já existe
     existing_record = db.query(RecordModel).filter(RecordModel.record_id == payload.record_id).first()
@@ -48,22 +90,28 @@ def create_record(db: Session, request: RecordCreateRequest) -> RecordResponse:
             detail=f"Manifest '{payload.manifest_id}' does not exist in repository. Create it first."
         )
 
-    # 2. Computar quantidade disponível baseada nos registos existentes (se aplicável para validação)
-    # Exemplo: não podemos transferir/receber/entregar mais do que o produzido
-    # Vamos considerar que o manifest define a quantidade máxima
-    
-    # Validação rigorosa de quantidades:
-    if payload.record_type != RecordType.PRODUCED:
-        # Se não for produção, precisamos verificar se há o suficiente já produzido/disponível
-        # (Nesta implementação simplificada, assumimos que as operações não podem exceder o valor do manifesto)
-        if payload.quantity > manifest.quantity:
+    produced_total = sum(
+        record.quantity
+        for record in db.query(RecordModel).filter(RecordModel.manifest_id == payload.manifest_id).all()
+        if record.record_type == RecordType.PRODUCED.value
+    )
+    available_stock = _available_stock(db, payload.manifest_id)
+
+    if payload.record_type == RecordType.PRODUCED:
+        if produced_total + payload.quantity > manifest.quantity:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Operation quantity ({payload.quantity}) exceeds manifest total quantity ({manifest.quantity})."
+                detail=(
+                    f"Produced quantity would exceed manifest total quantity "
+                    f"({produced_total + payload.quantity} > {manifest.quantity})."
+                ),
             )
-        
-        # Pode-se implementar lógicas mais complexas aqui dependendo do ciclo de vida,
-        # como verificar a soma de TRANSFERs vs PRODUCED.
+    elif payload.record_type in {RecordType.TRANSFER, RecordType.DELIVERY}:
+        if payload.quantity > available_stock:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Operation quantity ({payload.quantity}) exceeds available stock ({available_stock}).",
+            )
 
     # Calcular hash do payload
     payload_dict = payload.model_dump(mode='json')
@@ -87,10 +135,12 @@ def create_record(db: Session, request: RecordCreateRequest) -> RecordResponse:
     unix_timestamp = int(timestamp_dt.timestamp())
 
     # Ancorar o hash na blockchain
+    signer_priv = get_private_key_from_public(request.auth.public_key)
     anchor = anchor_hash(
         payload_hash=payload_hash,
         timestamp=unix_timestamp,
         item_id=payload.record_id,
+        signer_private_key=signer_priv,
     )
     
     if not anchor.anchored:
@@ -123,8 +173,13 @@ def create_record(db: Session, request: RecordCreateRequest) -> RecordResponse:
         manifest_id=payload.manifest_id,
         quantity=payload.quantity,
         unit=payload.unit,
+        user=payload.user,
         timestamp=payload.timestamp,
         notes=payload.notes,
+        payload_hash=payload_hash,
+        signature=request.auth.signature,
+        public_key=request.auth.public_key,
+        tx_hash=anchor.tx_hash,
     )
 
     try:

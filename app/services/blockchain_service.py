@@ -73,19 +73,21 @@ def check_connection_status() -> str:
         return f"Sepolia connection error: {exc}"
 
 
-def anchor_hash(payload_hash: str, timestamp: int, item_id: str) -> AnchorResult:
+def anchor_hash(payload_hash: str, timestamp: int, item_id: str, signer_private_key: str | None = None) -> AnchorResult:
     """Ancorar apenas o hash na blockchain."""
     w3 = get_web3()
     if w3 is None:
         return AnchorResult(tx_hash=None, anchored=False, reason="RPC URL not configured.")
     if not settings.contract_address or settings.contract_address == "0x0000000000000000000000000000000000000000":
         return AnchorResult(tx_hash=None, anchored=False, reason="Contract address not configured.")
-    if not settings.private_key_for_deploy:
+    # If no signer_private_key provided, fall back to server deploy key
+    if not signer_private_key and not settings.private_key_for_deploy:
         return AnchorResult(tx_hash=None, anchored=False, reason="Private key not configured.")
     if not item_id or not item_id.strip():
         return AnchorResult(tx_hash=None, anchored=False, reason="Item ID not provided.")
 
-    account = w3.eth.account.from_key(settings.private_key_for_deploy)
+    deploy_key_to_use = signer_private_key if signer_private_key else settings.private_key_for_deploy
+    account = w3.eth.account.from_key(deploy_key_to_use)
     contract = w3.eth.contract(address=Web3.to_checksum_address(settings.contract_address), abi=ANCHOR_ABI)
     nonce = w3.eth.get_transaction_count(account.address, "pending")
     
@@ -134,7 +136,7 @@ def anchor_hash(payload_hash: str, timestamp: int, item_id: str) -> AnchorResult
         logger.info(f"  • Max Fee: {w3.from_wei(max_fee_per_gas, 'gwei')} Gwei")
         logger.info("")
 
-        signed = w3.eth.account.sign_transaction(txn, private_key=settings.private_key_for_deploy)
+        signed = w3.eth.account.sign_transaction(txn, private_key=deploy_key_to_use)
         tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
         tx_hash_hex = tx_hash.hex()
 

@@ -57,3 +57,39 @@ def address_from_public_key(public_key_hex: str) -> str:
     clean_hex = public_key_hex[2:] if public_key_hex.startswith("0x") else public_key_hex
     digest = hashlib.sha256(bytes.fromhex(clean_hex)).hexdigest()
     return f"0x{digest[-40:]}"
+
+
+def get_private_key_from_public(public_key_hex: str) -> str | None:
+    """Tenta encontrar uma chave privada (do ambiente) correspondente a uma chave pública.
+
+    Procura por variáveis de ambiente comuns usadas na CLI de teste: `ALICE_KEY`, `BOB_KEY`, `CHARLIE_KEY`.
+    Retorna a chave privada com prefixo `0x` quando encontrada, ou `None`.
+    """
+    import os
+
+    if not public_key_hex:
+        return None
+
+    clean_target = public_key_hex[2:] if public_key_hex.startswith("0x") else public_key_hex
+    # Normalize to lower-case for comparison
+    clean_target = clean_target.lower()
+
+    candidates = [
+        os.getenv("ALICE_KEY"),
+        os.getenv("BOB_KEY"),
+        os.getenv("CHARLIE_KEY"),
+    ]
+
+    for priv in candidates:
+        if not priv:
+            continue
+        clean_priv = priv[2:] if priv.startswith("0x") else priv
+        try:
+            pub = get_public_key_from_private(clean_priv)
+        except Exception:
+            continue
+        clean_pub = pub.lower()
+        if clean_pub == clean_target:
+            return priv if priv.startswith("0x") else f"0x{priv}"
+
+    return None

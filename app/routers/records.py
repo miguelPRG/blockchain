@@ -21,6 +21,7 @@ def _record_payload(record: RecordModel) -> dict:
         "manifest_id": record.manifest_id,
         "quantity": record.quantity,
         "unit": record.unit,
+        "user": record.user,
         "timestamp": record.timestamp,
         "notes": record.notes,
     }
@@ -45,7 +46,6 @@ async def create_record_endpoint(request: RecordCreateRequest, db: Session = Dep
 )
 async def verify_record_endpoint(
     record_id: str,
-    tx_hash: str,
     db: Session = Depends(get_db),
 ) -> VerificationResponse:
     record = db.query(RecordModel).filter(RecordModel.record_id == record_id).first()
@@ -53,7 +53,16 @@ async def verify_record_endpoint(
         raise HTTPException(status_code=404, detail=f"Registro '{record_id}' não encontrado")
 
     payload = _record_payload(record)
-    return verify_payload(VerificationRequest(payload=payload, tx_hash=tx_hash, item_id=record_id))
+    return verify_payload(
+        VerificationRequest(
+            payload=payload,
+            tx_hash=record.tx_hash,
+            item_id=record_id,
+            public_key=record.public_key,
+            signature=record.signature,
+            expected_hash=record.payload_hash,
+        )
+    )
 
 
 @router.get(
@@ -72,6 +81,9 @@ async def get_record_by_id(record_id: str, db: Session = Depends(get_db)):
     return {
         "payload": payload,
         "payload_hash": sha256_hex(payload),
+        "signature": record.signature,
+        "public_key": record.public_key,
+        "tx_hash": record.tx_hash,
     }
 
 from pydantic import BaseModel

@@ -75,10 +75,13 @@ def _sqlite_timestamp_value(value) -> str:
 
 
 def _migrate_sqlite_payload_storage() -> None:
-    """Migrar tabelas antigas para guardar apenas campos do payload off-chain."""
+    """Migrar tabelas SQLite antigas para o formato verificável do repositório."""
     if engine.dialect.name != "sqlite":
         return
 
+    import json
+
+    from app.core.hashing import sha256_hex
     from app.models.manifest import Manifest
     from app.models.record import Record
 
@@ -86,26 +89,53 @@ def _migrate_sqlite_payload_storage() -> None:
         if _sqlite_table_exists(conn, "manifests") and _sqlite_table_exists(conn, "records"):
             _drop_migration_leftovers(conn)
 
-        tables = ("manifests", "records")
-        legacy_columns = {
-            "payload_hash",
-            "tx_hash",
-            "payload_json",
-            "creator",
-            "user",
-            "signature",
-            "public_key",
+        desired_columns = {
+            "manifests": {
+                "manifest_id",
+                "good_type",
+                "quantity",
+                "unit",
+                "ingredients_json",
+                "origin",
+                "sustainability",
+                "creator",
+                "timestamp",
+                "payload_hash",
+                "signature",
+                "public_key",
+                "tx_hash",
+                "created_at",
+            },
+            "records": {
+                "record_id",
+                "record_type",
+                "manifest_id",
+                "quantity",
+                "unit",
+                "user",
+                "timestamp",
+                "notes",
+                "payload_hash",
+                "signature",
+                "public_key",
+                "tx_hash",
+                "created_at",
+            },
         }
-        needs_migration = {
-            table: (
-                _sqlite_table_exists(conn, table)
+        obsolete_columns = {"payload_json"}
+
+        tables = ("manifests", "records")
+        needs_migration = {}
+        for table in tables:
+            columns = _sqlite_table_columns(conn, table) if _sqlite_table_exists(conn, table) else set()
+            needs_migration[table] = (
+                bool(columns)
                 and (
-                    bool(_sqlite_table_columns(conn, table) & legacy_columns)
+                    not desired_columns[table].issubset(columns)
+                    or bool(columns & obsolete_columns)
                     or _sqlite_column_types(conn, table).get("timestamp") != "VARCHAR(64)"
                 )
             )
-            for table in tables
-        }
         if needs_migration["manifests"] and _sqlite_table_exists(conn, "records"):
             needs_migration["records"] = True
 
@@ -123,9 +153,15 @@ def _migrate_sqlite_payload_storage() -> None:
 
         for index_name in (
             "ix_manifests_manifest_id",
+            "ix_manifests_payload_hash",
+            "ix_manifests_tx_hash",
+            "ix_manifests_creator",
             "ix_records_record_id",
             "ix_records_record_type",
             "ix_records_manifest_id",
+            "ix_records_payload_hash",
+            "ix_records_tx_hash",
+            "ix_records_user",
         ):
             conn.exec_driver_sql(f'DROP INDEX IF EXISTS "{index_name}"')
 
@@ -134,6 +170,20 @@ def _migrate_sqlite_payload_storage() -> None:
         if needs_migration["manifests"]:
             rows = conn.exec_driver_sql('SELECT * FROM "manifests_legacy_payload_migration"').mappings()
             for row in rows:
+                row_keys = set(row.keys())
+                creator = row["creator"] if "creator" in row_keys else ""
+                timestamp = _sqlite_timestamp_value(row["timestamp"])
+                payload = {
+                    "manifest_id": row["manifest_id"],
+                    "good_type": row["good_type"],
+                    "quantity": row["quantity"],
+                    "unit": row["unit"],
+                    "ingredients": json.loads(row["ingredients_json"]),
+                    "origin": row["origin"],
+                    "sustainability": row["sustainability"],
+                    "creator": creator,
+                    "timestamp": timestamp,
+                }
                 conn.execute(
                     Manifest.__table__.insert().values(
                         manifest_id=row["manifest_id"],
@@ -143,7 +193,12 @@ def _migrate_sqlite_payload_storage() -> None:
                         ingredients_json=row["ingredients_json"],
                         origin=row["origin"],
                         sustainability=row["sustainability"],
-                        timestamp=_sqlite_timestamp_value(row["timestamp"]),
+                        creator=creator,
+                        timestamp=timestamp,
+                        payload_hash=row["payload_hash"] if "payload_hash" in row_keys else sha256_hex(payload),
+                        signature=row["signature"] if "signature" in row_keys else "",
+                        public_key=row["public_key"] if "public_key" in row_keys else "",
+                        tx_hash=row["tx_hash"] if "tx_hash" in row_keys else "",
                         created_at=_parse_sqlite_datetime(row["created_at"]),
                     )
                 )
@@ -152,6 +207,19 @@ def _migrate_sqlite_payload_storage() -> None:
         if needs_migration["records"]:
             rows = conn.exec_driver_sql('SELECT * FROM "records_legacy_payload_migration"').mappings()
             for row in rows:
+                row_keys = set(row.keys())
+                user = row["user"] if "user" in row_keys else ""
+                timestamp = _sqlite_timestamp_value(row["timestamp"])
+                payload = {
+                    "record_id": row["record_id"],
+                    "record_type": row["record_type"],
+                    "manifest_id": row["manifest_id"],
+                    "quantity": row["quantity"],
+                    "unit": row["unit"],
+                    "user": user,
+                    "timestamp": timestamp,
+                    "notes": row["notes"],
+                }
                 conn.execute(
                     Record.__table__.insert().values(
                         record_id=row["record_id"],
@@ -159,8 +227,13 @@ def _migrate_sqlite_payload_storage() -> None:
                         manifest_id=row["manifest_id"],
                         quantity=row["quantity"],
                         unit=row["unit"],
-                        timestamp=_sqlite_timestamp_value(row["timestamp"]),
+                        user=user,
+                        timestamp=timestamp,
                         notes=row["notes"],
+                        payload_hash=row["payload_hash"] if "payload_hash" in row_keys else sha256_hex(payload),
+                        signature=row["signature"] if "signature" in row_keys else "",
+                        public_key=row["public_key"] if "public_key" in row_keys else "",
+                        tx_hash=row["tx_hash"] if "tx_hash" in row_keys else "",
                         created_at=_parse_sqlite_datetime(row["created_at"]),
                     )
                 )

@@ -22,11 +22,10 @@ def verify_payload(request: VerificationRequest) -> VerificationResponse:
         if blockchain_payload_hash is not None
         else None
     )
-    blockchain_tx_valid = (
-        blockchain_tx["status"] == 1 and blockchain_tx["function"] == "anchorHash"
-        if blockchain_tx
-        else None
-    )
+    blockchain_tx_valid = blockchain_tx["status"] == 1 and blockchain_tx["function"] == "anchorHash" if blockchain_tx else None
+    if request.tx_hash and blockchain_tx is None:
+        blockchain_tx_valid = False
+        blockchain_hash_matches = False
     blockchain_item_matches = (
         blockchain_item_id == request.item_id
         if blockchain_item_id is not None and request.item_id is not None

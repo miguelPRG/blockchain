@@ -1,4 +1,4 @@
-"""CLI interativa para assinatura de manifestos/registos e testagem de blockchain com múltiplos usuários."""
+"""CLI interativa para assinatura de manifestos/registos e testagem de blockchain com múltiplos utilizadores."""
 
 from __future__ import annotations
 
@@ -8,114 +8,257 @@ import logging
 import os
 from datetime import datetime, timezone
 from urllib import request as urlrequest
+
 from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Prompt, Confirm
-from rich.table import Table
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except Exception:
+    # dotenv is optional; if not installed, environment variables must be set externally
+    pass
 
 # Adicionar PYTHONPATH para importar do app
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '.')))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), ".")))
 
 from app.core.hashing import sha256_hex
 from app.core.security import sign_hash, get_public_key_from_private, address_from_public_key
-from app.core.hashing import canonical_json
 
-# Configurar logging COM ficheiro
+
+# ============================================================
+# Configuração
+# ============================================================
+
 logging.basicConfig(
     level=logging.DEBUG,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     handlers=[
-        logging.FileHandler('/tmp/blockchain_cli_debug.log'),
-        logging.StreamHandler(sys.stderr)
-    ]
+        logging.FileHandler("/tmp/blockchain_cli_debug.log"),
+        logging.StreamHandler(sys.stderr),
+    ],
 )
-logger = logging.getLogger(__name__)
 
+logger = logging.getLogger(__name__)
 console = Console()
 
-# Predefined dummy users for testing role-based authentication
+
+# ============================================================
+# Utilizadores de teste (carregam chaves privadas a partir do ambiente)
+# ============================================================
+# Se estiver a usar um ficheiro .env, instale e use `python-dotenv` ou exporte
+# as variáveis `PRIVATE_KEY_1`, `PRIVATE_KEY_2`, `PRIVATE_KEY_3` no seu ambiente.
+
+def _env_priv(key: str, default: str) -> str:
+    """Lê uma chave privada do ambiente; garante prefixo 0x se necessário."""
+    v = os.getenv(key)
+    if v:
+        return v if v.startswith("0x") else f"0x{v}"
+    return default
+
 USERS = {
     "1": {
         "name": "Alice (Producer)",
         "role": "PRODUCER",
-        "priv": "0x1111111111111111111111111111111111111111111111111111111111111111",
+        "priv": _env_priv(
+            "ALICE_KEY",
+            "0x00000000000000000000000000000000000000000000000000000000"
+        ),
     },
     "2": {
         "name": "Bob (Transporter)",
         "role": "TRANSPORTER",
-        "priv": "0x2222222222222222222222222222222222222222222222222222222222222222",
+        "priv": _env_priv(
+            "BOB_KEY",
+            "0x11111111111111111111111111111111111111111111111111111111"
+        ),
     },
     "3": {
         "name": "Charlie (Receiver)",
         "role": "RECEIVER",
-        "priv": "0x3333333333333333333333333333333333333333333333333333333333333333",
+        "priv": _env_priv(
+            "CHARLIE_KEY",
+            "0x22222222222222222222222222222222222222222222222222222222"
+        ),
     },
 }
 
 
 ROLE_TO_RECORD_TYPES = {
+    "PRODUCER": ["PRODUCED"],
     "TRANSPORTER": ["TRANSFER", "DELIVERY"],
     "RECEIVER": ["RECEIVED"],
 }
 
+
+RECORD_TYPE_LABELS = {
+    "PRODUCED": "Produção",
+    "TRANSFER": "Transferência",
+    "RECEIVED": "Receção",
+    "DELIVERY": "Entrega",
+}
+
+
+# ============================================================
+# Funções auxiliares
+# ============================================================
+
+def strip_0x(value: str) -> str:
+    """Remove o prefixo 0x caso exista."""
+    return value[2:] if value.startswith("0x") else value
+
+
+def get_public_key(private_key: str) -> str:
+    """Obtém a chave pública a partir da chave privada."""
+    return f"0x{get_public_key_from_private(strip_0x(private_key))}"
+
+
+def get_address(public_key: str) -> str:
+    """Obtém o endereço do utilizador a partir da chave pública."""
+    return address_from_public_key(public_key)
+
+
 def post_json(url: str, payload: dict) -> dict:
-    """Enviar carga JSON para API e analisar resposta JSON."""
+    """Envia uma carga JSON para a API e devolve a resposta JSON."""
     try:
-        req = urlrequest.Request(url=url, method="POST", data=json.dumps(payload).encode("utf-8"))
+        req = urlrequest.Request(
+            url=url,
+            method="POST",
+            data=json.dumps(payload).encode("utf-8"),
+        )
         req.add_header("Content-Type", "application/json")
+
         with urlrequest.urlopen(req) as resp:  # noqa: S310
             return json.loads(resp.read().decode("utf-8"))
+
     except urlrequest.HTTPError as e:
         try:
             error_detail = json.loads(e.read().decode("utf-8"))
-            console.print(f"[red]✗ Erro HTTP {e.code}:[/red] {error_detail.get('detail', str(error_detail))}")
+            console.print(
+                f"[red]✗ Erro HTTP {e.code}:[/red] "
+                f"{error_detail.get('detail', str(error_detail))}"
+            )
         except Exception:
             console.print(f"[red]✗ Erro HTTP {e.code}:[/red] {e.reason}")
         return {}
+
     except Exception as e:
         console.print(f"[red]✗ Erro na requisição:[/red] {e}")
         return {}
 
 
-def show_header(current_user: dict | None = None):
-    """Mostrar cabeçalho da aplicação."""
+def get_json(url: str) -> dict:
+    """Faz um pedido GET e devolve a resposta JSON."""
+    try:
+        req = urlrequest.Request(url=url, method="GET")
+
+        with urlrequest.urlopen(req) as resp:  # noqa: S310
+            return json.loads(resp.read().decode("utf-8"))
+
+    except urlrequest.HTTPError as e:
+        try:
+            error_detail = json.loads(e.read().decode("utf-8"))
+            console.print(
+                f"[red]✗ Erro HTTP {e.code}:[/red] "
+                f"{error_detail.get('detail', str(error_detail))}"
+            )
+        except Exception:
+            console.print(f"[red]✗ Erro HTTP {e.code}:[/red] {e.reason}")
+        return {}
+
+    except Exception as e:
+        console.print(f"[red]✗ Erro no pedido GET:[/red] {e}")
+        return {}
+
+
+def show_header(current_user: dict | None = None) -> None:
+    """Mostra o cabeçalho da aplicação."""
     console.clear()
-    console.print(Panel(
-        "[bold cyan]🍺 Rastreador de Cerveja Artesanal[/bold cyan]\n"
-        "[dim]Sistema de Blockchain para Supply Chain[/dim]",
-        title="[bold]Blockchain CLI[/bold]",
-        border_style="cyan"
-    ))
+
+    console.print(
+        Panel(
+            "[bold cyan]🍺 Rastreador de Cerveja Artesanal[/bold cyan]\n"
+            "[dim]Sistema de Blockchain para Supply Chain[/dim]",
+            title="[bold]Blockchain CLI[/bold]",
+            border_style="cyan",
+        )
+    )
+
     if current_user:
-        pub = f"0x{get_public_key_from_private(current_user['priv'][2:])}"
-        addr = address_from_public_key(pub)
-        console.print(f"[bold green]👤 Usuário Ativo:[/bold green] {current_user['name']}")
-        console.print(f"[dim]Endereço: {addr}[/dim]\n")
+        private_key = current_user["priv"]
+        public_key = get_public_key(private_key)
+        address = get_address(public_key)
+
+        console.print(f"[bold green]👤 Utilizador Ativo:[/bold green] {current_user['name']}")
+        console.print(f"[dim]Papel: {current_user['role']}[/dim]")
+        console.print(f"[dim]Endereço: {address}[/dim]\n")
 
 
-def create_manifest_interactive(base_url: str, private_key: str, public_key: str) -> tuple[str | None, str | None]:
-    """Criar manifesto de forma interativa. Retorna (manifest_id, payload_hash)."""
+def select_user(default: str = "1") -> str:
+    """Permite selecionar um utilizador."""
+    console.print("\n[bold cyan]Selecione o Utilizador:[/bold cyan]")
+
+    for key, user in USERS.items():
+        console.print(f"  [cyan]{key}[/cyan] - {user['name']}")
+
+    choice = Prompt.ask("Escolha", choices=list(USERS.keys()), default=default)
+
+    # Mostrar endereço do utilizador escolhido imediatamente
+    chosen = USERS.get(choice)
+    if chosen:
+        priv = chosen.get("priv")
+        try:
+            pub = get_public_key(priv)
+            addr = get_address(pub)
+            console.print(f"\n[dim]Endereço selecionado:[/dim] {addr}\n")
+        except Exception:
+            # Fallback: não bloquear se houver erro a derivar chave
+            pass
+
+    return choice
+
+
+# ============================================================
+# Manifestos
+# ============================================================
+
+def create_manifest_interactive(
+    base_url: str,
+    private_key: str,
+    public_key: str,
+) -> tuple[str | None, str | None]:
+    """
+    Cria um manifesto de forma interativa.
+
+    Como a criação do manifesto representa o nascimento do lote,
+    o sistema pode também criar um registo PRODUCED opcionalmente.
+    """
+
     console.print("\n[bold cyan]📋 Criar Novo Manifesto[/bold cyan]")
     console.print("[dim]Preencha os dados do lote de cerveja[/dim]\n")
-        
-    manifest_id = Prompt.ask("[bold]ID do Manifesto[/bold]", default=f"manifest-{datetime.now().strftime('%Y%m%d%H%M%S')}")
+
+    manifest_id = Prompt.ask(
+        "[bold]ID do Manifesto[/bold]",
+        default=f"manifest-{datetime.now().strftime('%Y%m%d%H%M%S')}",
+    )
+
     good_type = Prompt.ask("[bold]Tipo de Cerveja[/bold]", default="IPA Artesanal")
     quantity = float(Prompt.ask("[bold]Quantidade[/bold]", default="100"))
     unit = Prompt.ask("[bold]Unidade[/bold]", default="litros")
-    
-    console.print("\n[bold]Ingredientes[/bold] (separe com espaço):")
+
+    console.print("\n[bold]Ingredientes[/bold] separados por espaço:")
     ingredients_str = Prompt.ask("Ex: água malte lúpulo", default="água malte lúpulo")
     ingredients = ingredients_str.split()
-    
+
     origin = Prompt.ask("[bold]Origem[/bold]", default="Douro, Portugal")
     sustainability = Prompt.ask("[bold]Certificação[/bold]", default="Produção Responsável")
-    
-    # Confirmar
+
     if not Confirm.ask("\n[bold]Confirmar criação de manifesto?[/bold]", default=True):
         console.print("[yellow]⊘ Cancelado[/yellow]")
         return None, None
-    
-    # Construir payload
+
+    creator = get_address(public_key)
+
     payload = {
         "manifest_id": manifest_id,
         "good_type": good_type,
@@ -124,113 +267,106 @@ def create_manifest_interactive(base_url: str, private_key: str, public_key: str
         "ingredients": ingredients,
         "origin": origin,
         "sustainability": sustainability,
+        "creator": creator,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
-    
-    # Assinar
-    console.print("\n[dim]Calculando hash SHA-256...[/dim]")
-    
+
+    console.print("\n[dim]Calculando hash SHA-256 do manifesto...[/dim]")
+
     payload_hash = sha256_hex(payload)
-    console.print(f"[yellow]PAYLOAD HASH: {payload_hash}[/yellow]")
-    
-    signature = sign_hash(private_key[2:], payload_hash)  # Remove 0x
-    console.print(f"[yellow]SIGNATURE: {signature}[/yellow]")
-    
+    signature = sign_hash(strip_0x(private_key), payload_hash)
+
+    console.print(f"[yellow]PAYLOAD HASH:[/yellow] {payload_hash}")
+    console.print(f"[yellow]SIGNATURE:[/yellow] {signature}")
+
     body = {
         "payload": payload,
         "auth": {
             "public_key": public_key,
-            "signature": signature
-        }
+            "signature": signature,
+            "role": "PRODUCER",
+        },
     }
-    
-    # Enviar
+
     console.print(f"\n[dim]Enviando para {base_url}/manifests...[/dim]")
     result = post_json(f"{base_url}/manifests", body)
-    
-    if result:
-        console.print("[green]✓ Manifesto criado com sucesso![/green]")
-        return manifest_id, payload_hash
-    else:
+
+    if not result:
         console.print("[red]✗ Erro ao criar manifesto[/red]")
         return None, None
 
+    console.print("[green]✓ Manifesto criado com sucesso![/green]")
 
-def create_record_interactive(base_url: str, private_key: str, public_key: str, last_manifest_id: str | None = None) -> str | None:
-    """Criar registo de operação de forma interativa. Retorna record_id."""
-    console.print("\n[bold cyan]📝 Criar Novo registo de Operação[/bold cyan]")
-    
-    record_id = Prompt.ask("[bold]ID do registo[/bold]", default=f"record-{datetime.now().strftime('%Y%m%d%H%M%S')}")
-    
-    # Escolher tipo
-    console.print("\n[bold]Tipo de Operação:[/bold]")
-    console.print("  [cyan]1[/cyan] - PRODUCED (Produção)")
-    console.print("  [cyan]2[/cyan] - TRANSFER (Transferência)")
-    console.print("  [cyan]3[/cyan] - RECEIVED (Recebimento)")
-    console.print("  [cyan]4[/cyan] - DELIVERY (Entrega)")
-    
-    type_choice = Prompt.ask("Escolha", choices=["1", "2", "3", "4"], default="1")
-    type_map = {"1": "PRODUCED", "2": "TRANSFER", "3": "RECEIVED", "4": "DELIVERY"}
-    record_type = type_map[type_choice]
-    
-    # Pedir o ID do manifesto
-    if last_manifest_id:
-        console.print(f"[dim]Último ID: {last_manifest_id}[/dim]")
-    manifest_id = Prompt.ask("[bold]ID do Manifesto[/bold]", default=last_manifest_id or "")
-    
-    if not manifest_id:
-        console.print("[red]✗ Erro: ID do manifesto é obrigatório[/red]")
-        return None
-    
-    quantity = float(Prompt.ask("[bold]Quantidade[/bold]", default="50"))
-    unit = Prompt.ask("[bold]Unidade[/bold]", default="litros")
-    notes = Prompt.ask("[bold]Notas[/bold] (opcional)", default="")
-    
-    # Confirmar
-    if not Confirm.ask("\n[bold]Confirmar criação de registo?[/bold]", default=True):
-        console.print("[yellow]⊘ Cancelado[/yellow]")
-        return None
-    
-    # Construir payload
+    if Confirm.ask(
+        "[bold]Criar também o registo PRODUCED automaticamente?[/bold]",
+        default=False,
+    ):
+        produced_result = create_produced_record_automatically(
+            base_url=base_url,
+            private_key=private_key,
+            public_key=public_key,
+            manifest_id=manifest_id,
+            quantity=quantity,
+            unit=unit,
+        )
+
+        if produced_result:
+            console.print("[green]✓ Registo PRODUCED criado automaticamente![/green]")
+        else:
+            console.print(
+                "[yellow]⚠ Manifesto criado, mas falhou a criação automática do registo PRODUCED.[/yellow]"
+            )
+
+    return manifest_id, payload_hash
+
+
+def create_produced_record_automatically(
+    base_url: str,
+    private_key: str,
+    public_key: str,
+    manifest_id: str,
+    quantity: float,
+    unit: str,
+) -> str | None:
+    """Cria automaticamente o registo PRODUCED associado ao manifesto."""
+
+    user_address = get_address(public_key)
+
     payload = {
-        "record_id": record_id,
-        "record_type": record_type,
+        "record_id": f"produced-{manifest_id}",
+        "record_type": "PRODUCED",
         "manifest_id": manifest_id,
         "quantity": quantity,
         "unit": unit,
+        "user": user_address,
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "notes": notes,
+        "notes": "Registo PRODUCED criado automaticamente com o manifesto.",
     }
-    
-    # Assinar
-    console.print("\n[dim]Calculando hash SHA-256...[/dim]")
-    
+
     payload_hash = sha256_hex(payload)
-    console.print(f"[yellow]PAYLOAD HASH: {payload_hash}[/yellow]")
-    
-    signature = sign_hash(private_key[2:], payload_hash)
-    console.print(f"[yellow]SIGNATURE: {signature}[/yellow]")
-    
+    signature = sign_hash(strip_0x(private_key), payload_hash)
+
     body = {
         "payload": payload,
         "auth": {
             "public_key": public_key,
-            "signature": signature
-        }
+            "signature": signature,
+            "role": "PRODUCER",
+        },
     }
-    
-    # Enviar
-    console.print(f"\n[dim]Enviando para {base_url}/records...[/dim]")
+
+    console.print("[dim]Criando registo PRODUCED automático...[/dim]")
     result = post_json(f"{base_url}/records", body)
-    
+
     if result:
-        console.print("[green]✓ registo criado com sucesso![/green]")
-        return record_id
-    else:
-        console.print("[red]✗ Erro ao criar registo[/red]")
-    
+        return payload["record_id"]
+
     return None
 
+
+# ============================================================
+# Registos
+# ============================================================
 
 def create_record_interactive_for_role(
     base_url: str,
@@ -239,30 +375,31 @@ def create_record_interactive_for_role(
     role: str,
     last_manifest_id: str | None = None,
 ) -> str | None:
-    """Criar registo filtrando os tipos permitidos pelo papel do usuário."""
+    """Cria um registo filtrando os tipos permitidos pelo papel do utilizador."""
+
     allowed_types = ROLE_TO_RECORD_TYPES.get(role, [])
+
     if not allowed_types:
         console.print(f"[red]✗ Papel sem permissões configuradas: {role}[/red]")
         return None
 
-    console.print("\n[bold cyan]📝 Criar Novo registo de Operação[/bold cyan]")
+    console.print("\n[bold cyan]📝 Criar Novo Registo de Operação[/bold cyan]")
     console.print(f"[dim]Papel atual: {role}[/dim]")
 
-    record_id = Prompt.ask("[bold]ID do registo[/bold]", default=f"record-{datetime.now().strftime('%Y%m%d%H%M%S')}")
+    record_id = Prompt.ask(
+        "[bold]ID do Registo[/bold]",
+        default=f"record-{datetime.now().strftime('%Y%m%d%H%M%S')}",
+    )
 
-    type_label = {
-        "PRODUCED": "Produção",
-        "TRANSFER": "Transferência",
-        "RECEIVED": "Recebimento",
-        "DELIVERY": "Entrega",
-    }
     choice_map: dict[str, str] = {}
 
     console.print("\n[bold]Tipo de Operação Permitido:[/bold]")
-    for idx, record_type in enumerate(allowed_types, start=1):
-        key = str(idx)
+
+    for index, record_type in enumerate(allowed_types, start=1):
+        key = str(index)
         choice_map[key] = record_type
-        console.print(f"  [cyan]{key}[/cyan] - {record_type} ({type_label.get(record_type, record_type)})")
+        label = RECORD_TYPE_LABELS.get(record_type, record_type)
+        console.print(f"  [cyan]{key}[/cyan] - {record_type} ({label})")
 
     if len(allowed_types) == 1:
         record_type = allowed_types[0]
@@ -272,7 +409,8 @@ def create_record_interactive_for_role(
         record_type = choice_map[selected]
 
     if last_manifest_id:
-        console.print(f"[dim]Último ID: {last_manifest_id}[/dim]")
+        console.print(f"[dim]Último manifesto usado: {last_manifest_id}[/dim]")
+
     manifest_id = Prompt.ask("[bold]ID do Manifesto[/bold]", default=last_manifest_id or "")
 
     if not manifest_id:
@@ -287,28 +425,33 @@ def create_record_interactive_for_role(
         console.print("[yellow]⊘ Cancelado[/yellow]")
         return None
 
+    user_address = get_address(public_key)
+
     payload = {
         "record_id": record_id,
         "record_type": record_type,
         "manifest_id": manifest_id,
         "quantity": quantity,
         "unit": unit,
+        "user": user_address,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "notes": notes,
     }
 
-    console.print("\n[dim]Calculando hash SHA-256...[/dim]")
-    payload_hash = sha256_hex(payload)
-    console.print(f"[yellow]PAYLOAD HASH: {payload_hash}[/yellow]")
+    console.print("\n[dim]Calculando hash SHA-256 do registo...[/dim]")
 
-    signature = sign_hash(private_key[2:], payload_hash)
-    console.print(f"[yellow]SIGNATURE: {signature}[/yellow]")
+    payload_hash = sha256_hex(payload)
+    signature = sign_hash(strip_0x(private_key), payload_hash)
+
+    console.print(f"[yellow]PAYLOAD HASH:[/yellow] {payload_hash}")
+    console.print(f"[yellow]SIGNATURE:[/yellow] {signature}")
 
     body = {
         "payload": payload,
         "auth": {
             "public_key": public_key,
             "signature": signature,
+            "role": role,
         },
     }
 
@@ -316,168 +459,264 @@ def create_record_interactive_for_role(
     result = post_json(f"{base_url}/records", body)
 
     if result:
-        console.print("[green]✓ registo criado com sucesso![/green]")
+        console.print("[green]✓ Registo criado com sucesso![/green]")
         return record_id
 
     console.print("[red]✗ Erro ao criar registo[/red]")
     return None
 
-def verify_data(base_url: str, private_key: str, public_key: str):
-    """Verificar payload contra o backend."""
-    console.print("\n[bold cyan]🔍 Verificar Dados (Independente)[/bold cyan]")
-    # Seleção: 'm' -> manifests, 'r' -> records
-    endpoint_choice = Prompt.ask("O que deseja verificar? Manifestos (m) ou Registos (r)", choices=["m", "r"], default="r")
-    endpoint_map = {"m": "manifests", "r": "records"}
-    endpoint_path = endpoint_map.get(endpoint_choice.lower())
-    item_label = "Manifesto" if endpoint_choice.lower() == "m" else "Registo"
+
+# ============================================================
+# Verificação
+# ============================================================
+
+def verify_data(base_url: str) -> None:
+    """Verifica dados contra o backend, sem inventar assinatura nova."""
+
+    console.print("\n[bold cyan]🔍 Verificar Dados[/bold cyan]")
+
+    endpoint_choice = Prompt.ask(
+        "O que deseja verificar? Manifestos (m) ou Registos (r)",
+        choices=["m", "r"],
+        default="r",
+    )
+
+    endpoint_map = {
+        "m": "manifests",
+        "r": "records",
+    }
+
+    endpoint_path = endpoint_map[endpoint_choice]
+    item_label = "Manifesto" if endpoint_choice == "m" else "Registo"
 
     item_id = Prompt.ask(f"ID de {item_label}")
 
-    try:
-        req = urlrequest.Request(url=f"{base_url}/{endpoint_path}/{item_id}", method="GET")
-        with urlrequest.urlopen(req) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
+    data = get_json(f"{base_url}/{endpoint_path}/{item_id}")
 
-        if "error" in data:
-            console.print(f"[red]✗ Erro: {data['error']}[/red]")
-            return
+    if not data:
+        console.print("[red]✗ Não foi possível obter os dados para verificação[/red]")
+        return
 
-        # API returns a wrapper with 'payload', 'payload_hash' and 'anchor'
-        returned_payload = data.get("payload") or data
+    if "error" in data:
+        console.print(f"[red]✗ Erro: {data['error']}[/red]")
+        return
 
-        # Compute expected hash from the payload object
-        expected_hash = sha256_hex(returned_payload)
-        sig = sign_hash(private_key[2:], expected_hash)
+    returned_payload = data.get("payload") or data
 
-        tx_hash = None
-        if isinstance(data.get("anchor"), dict):
-            tx_hash = data["anchor"].get("tx_hash")
-        else:
-            tx_hash = data.get("tx_hash")
+    signature = (
+        data.get("signature")
+        or data.get("auth", {}).get("signature")
+    )
 
-        body = {
-            "payload": returned_payload,
-            "expected_hash": expected_hash,
-            "public_key": public_key,
-            "signature": sig,
-            "tx_hash": tx_hash,
-        }
+    stored_public_key = (
+        data.get("public_key")
+        or data.get("auth", {}).get("public_key")
+    )
 
-        console.print("\n[dim]Enviando para /verify...[/dim]")
-        result = post_json(f"{base_url}/verify", body)
+    tx_hash = (
+        data.get("tx_hash")
+        or data.get("transaction_hash")
+        or data.get("blockchain_tx")
+    )
 
-        if result:
-            console.print(Panel(json.dumps(result, indent=2), title="[bold green]Resultado da Verificação[/bold green]", border_style="green"))
+    if not signature:
+        console.print("[red]✗ Erro: assinatura ausente nos dados guardados[/red]")
+        return
 
-    except Exception as e:
-        console.print(f"[red]✗ Erro ao verificar: {e}[/red]")
+    if not stored_public_key:
+        console.print("[red]✗ Erro: chave pública ausente nos dados guardados[/red]")
+        return
+
+    expected_hash = sha256_hex(returned_payload)
+
+    body = {
+        "payload": returned_payload,
+        "expected_hash": expected_hash,
+        "public_key": stored_public_key,
+        "signature": signature,
+        "tx_hash": tx_hash,
+        "item_id": item_id,
+    }
+
+    console.print("\n[dim]Enviando para /verify...[/dim]")
+    result = post_json(f"{base_url}/verify", body)
+
+    if result:
+        console.print(
+            Panel(
+                json.dumps(result, indent=2, ensure_ascii=False),
+                title="[bold green]Resultado da Verificação[/bold green]",
+                border_style="green",
+            )
+        )
+    else:
+        console.print("[red]✗ Falha ao verificar os dados[/red]")
 
 
-def simulate_attack(base_url: str):
-    """Simular um ataque alterando dados na DB."""
-    console.print("\n[bold red]⚠️ Simular Ataque (Alteração de Dados)[/bold red]")
-    
-    endpoint_choice = Prompt.ask("O que deseja alterar? Manifestos (m) ou Registos (r)", choices=["m", "r"], default="r")
-    endpoint_map = {"m": "manifests", "r": "records"}
+# ============================================================
+# Ataque / Tamper
+# ============================================================
+
+def simulate_attack(base_url: str) -> None:
+    """Simula um ataque alterando dados na base de dados."""
+
+    console.print("\n[bold red]⚠️ Simular Ataque / Alteração de Dados[/bold red]")
+
+    endpoint_choice = Prompt.ask(
+        "O que deseja alterar? Manifestos (m) ou Registos (r)",
+        choices=["m", "r"],
+        default="r",
+    )
+
+    endpoint_map = {
+        "m": "manifests",
+        "r": "records",
+    }
+
     endpoint = endpoint_map[endpoint_choice]
     item_label = "Manifesto" if endpoint_choice == "m" else "Registo"
 
     item_id = Prompt.ask(f"ID de {item_label} a ser alterado")
-    new_quantity = Prompt.ask("Nova Quantidade Falsa")
-    
+    new_quantity = Prompt.ask("Nova quantidade falsa")
+
     try:
         new_quantity_float = float(new_quantity)
-        body = {"new_quantity": new_quantity_float}
-        
-        req = urlrequest.Request(url=f"{base_url}/{endpoint}/{item_id}/tamper", method="PUT", data=json.dumps(body).encode("utf-8"))
+
+        body = {
+            "new_quantity": new_quantity_float,
+        }
+
+        req = urlrequest.Request(
+            url=f"{base_url}/{endpoint}/{item_id}/tamper",
+            method="PUT",
+            data=json.dumps(body).encode("utf-8"),
+        )
         req.add_header("Content-Type", "application/json")
-        with urlrequest.urlopen(req) as resp:
+
+        with urlrequest.urlopen(req) as resp:  # noqa: S310
             data = json.loads(resp.read().decode("utf-8"))
-            
+
         console.print(f"[bold red]✓ {data.get('message', 'Alterado com sucesso')}[/bold red]")
-        console.print("[dim]Agora use a opção 'Verificar Dados' para ver o sistema rejeitar a integridade![/dim]")
-        
+        console.print(
+            "[dim]Agora usa a opção 'Verificar Dados' para mostrar que a integridade falha.[/dim]"
+        )
+
     except Exception as e:
         console.print(f"[red]✗ Erro ao simular ataque: {e}[/red]")
 
 
-def show_menu(base_url: str, current_user_id: str, last_manifest_id: str | None = None) -> None:
-    """Mostrar menu principal interativo."""
-    user = USERS[current_user_id]
-    role = user["role"]
-    private_key = user["priv"]
-    public_key = f"0x{get_public_key_from_private(private_key[2:])}"
-    
-    show_header(user)
-    
-    console.print("\n[bold]O que deseja fazer?[/bold]\n")
+# ============================================================
+# Menu principal
+# ============================================================
+
+def build_menu_options(role: str) -> dict[str, tuple[str, str]]:
+    """Constrói o menu com base no papel do utilizador."""
 
     options: dict[str, tuple[str, str]] = {}
     next_option = 1
 
     if role == "PRODUCER":
-        options[str(next_option)] = ("create_manifest", "Criar Manifesto (novo lote)")
+        options[str(next_option)] = (
+            "create_manifest",
+            "Criar Manifesto",
+        )
         next_option += 1
 
-    if role in {"TRANSPORTER", "RECEIVER"}:
-        options[str(next_option)] = ("create_record", "Criar registo (operação do seu papel)")
+    # O produtor não cria PRODUCED manualmente porque isso já acontece
+    # automaticamente ao criar o manifesto.
+    if role in ROLE_TO_RECORD_TYPES and role != "PRODUCER":
+        options[str(next_option)] = (
+            "create_record",
+            "Criar registo da sua função",
+        )
         next_option += 1
 
-    options[str(next_option)] = ("verify", "Verificar Dados (Integridade)")
+    options[str(next_option)] = ("verify", "Verificar Dados")
     next_option += 1
-    options[str(next_option)] = ("switch_user", "Trocar Usuário")
+
+    options[str(next_option)] = ("switch_user", "Trocar Utilizador")
     next_option += 1
-    options[str(next_option)] = ("attack", "[red]Simular Ataque[/red] (Alterar DB)")
+
+    options[str(next_option)] = ("attack", "[red]Simular Ataque[/red] / Alterar DB")
     next_option += 1
+
     options[str(next_option)] = ("exit", "Sair")
 
-    for key, (_, label) in options.items():
-        console.print(f"  [cyan]{key}[/cyan] - {label}")
-    
-    if last_manifest_id:
-        console.print(f"\n[dim]Último manifesto: {last_manifest_id}[/dim]")
-    
-    choice = Prompt.ask("\nEscolha", choices=list(options.keys()), default="1")
-    action = options[choice][0]
-
-    if action == "create_manifest":
-        manifest_id, _ = create_manifest_interactive(base_url, private_key, public_key)
-        if manifest_id:
-            last_manifest_id = manifest_id
-    elif action == "create_record":
-        _ = create_record_interactive_for_role(base_url, private_key, public_key, role, last_manifest_id)
-    elif action == "verify":
-        verify_data(base_url, private_key, public_key)
-    elif action == "switch_user":
-        console.print("\n[bold]Selecione o Usuário:[/bold]")
-        for k, v in USERS.items():
-            console.print(f"  [cyan]{k}[/cyan] - {v['name']}")
-        new_user = Prompt.ask("Escolha", choices=list(USERS.keys()), default="1")
-        show_menu(base_url, new_user, last_manifest_id)
-        return
-    elif action == "attack":
-        simulate_attack(base_url)
-    elif action == "exit":
-        console.print("[yellow]Até logo! 👋[/yellow]")
-        sys.exit(0)
-    
-    # Voltar ao menu
-    input("\n[dim]Pressione Enter para continuar...[/dim]")
-    show_menu(base_url, current_user_id, last_manifest_id)
+    return options
 
 
-def main():
+def run_app(base_url: str, initial_user_id: str) -> None:
+    """Executa a aplicação CLI."""
+
+    current_user_id = initial_user_id
+    last_manifest_id: str | None = None
+
+    while True:
+        user = USERS[current_user_id]
+        role = user["role"]
+        private_key = user["priv"]
+        public_key = get_public_key(private_key)
+
+        show_header(user)
+
+        console.print("\n[bold]O que deseja fazer?[/bold]\n")
+
+        options = build_menu_options(role)
+
+        for key, (_, label) in options.items():
+            console.print(f"  [cyan]{key}[/cyan] - {label}")
+
+        if last_manifest_id:
+            console.print(f"\n[dim]Último manifesto: {last_manifest_id}[/dim]")
+
+        choice = Prompt.ask("\nEscolha", choices=list(options.keys()), default="1")
+        action = options[choice][0]
+
+        if action == "create_manifest":
+            manifest_id, _ = create_manifest_interactive(
+                base_url=base_url,
+                private_key=private_key,
+                public_key=public_key,
+            )
+
+            if manifest_id:
+                last_manifest_id = manifest_id
+
+        elif action == "create_record":
+            create_record_interactive_for_role(
+                base_url=base_url,
+                private_key=private_key,
+                public_key=public_key,
+                role=role,
+                last_manifest_id=last_manifest_id,
+            )
+
+        elif action == "verify":
+            verify_data(base_url)
+
+        elif action == "switch_user":
+            current_user_id = select_user(default=current_user_id)
+            continue
+
+        elif action == "attack":
+            simulate_attack(base_url)
+
+        elif action == "exit":
+            console.print("[yellow]Até logo! 👋[/yellow]")
+            sys.exit(0)
+
+        input("\n[dim]Pressione Enter para continuar...[/dim]")
+
+
+def main() -> None:
     """Ponto de entrada da aplicação."""
+
     base_url = "http://127.0.0.1:8000"
-    
-    console.print("\n[bold cyan]Selecione o Usuário Inicial:[/bold cyan]")
-    for k, v in USERS.items():
-        console.print(f"  [cyan]{k}[/cyan] - {v['name']}")
-        
-    user_id = Prompt.ask("Escolha", choices=list(USERS.keys()), default="1")
-    
+
+    user_id = select_user(default="1")
+
     try:
-        show_menu(base_url, user_id)
+        run_app(base_url, user_id)
     except KeyboardInterrupt:
         console.print("\n[yellow]Aplicação encerrada pelo utilizador[/yellow]")
         sys.exit(0)

@@ -14,3 +14,4 @@ class SignatureEnvelope(BaseModel):
 
     public_key: str = Field(..., description="Chave pública ECDSA do usuário em hex.")
     signature: str = Field(..., description="Assinatura ECDSA em hex sobre hash da carga.")
+    role: str | None = Field(default=None, description="Papel declarado do usuário nesta operação.")

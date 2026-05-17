@@ -15,6 +15,10 @@ def get_manifest(db: Session, manifest_id: str) -> Manifest | None:
 def create_manifest(
     db: Session,
     payload: ManifestPayload,
+    payload_hash: str,
+    signature: str,
+    public_key: str,
+    tx_hash: str,
 ) -> Manifest:
     """Persistir manifesto e retornar entidade ORM."""
     entity = Manifest(
@@ -25,7 +29,12 @@ def create_manifest(
         ingredients_json=json.dumps(payload.ingredients, ensure_ascii=True),
         origin=payload.origin,
         sustainability=payload.sustainability,
+        creator=payload.creator,
         timestamp=payload.timestamp,
+        payload_hash=payload_hash,
+        signature=signature,
+        public_key=public_key,
+        tx_hash=tx_hash,
     )
     db.add(entity)
     db.commit()

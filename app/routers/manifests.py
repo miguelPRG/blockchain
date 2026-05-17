@@ -23,6 +23,7 @@ def _manifest_payload(manifest: ManifestModel) -> dict:
         "ingredients": json.loads(manifest.ingredients_json),
         "origin": manifest.origin,
         "sustainability": manifest.sustainability,
+        "creator": manifest.creator,
         "timestamp": manifest.timestamp,
     }
 
@@ -34,7 +35,6 @@ def _manifest_payload(manifest: ManifestModel) -> dict:
 )
 async def verify_manifest_endpoint(
     manifest_id: str,
-    tx_hash: str,
     db: Session = Depends(get_db),
 ) -> VerificationResponse:
     manifest = db.query(ManifestModel).filter(ManifestModel.manifest_id == manifest_id).first()
@@ -42,7 +42,16 @@ async def verify_manifest_endpoint(
         raise HTTPException(status_code=404, detail=f"Manifesto '{manifest_id}' não encontrado")
 
     payload = _manifest_payload(manifest)
-    return verify_payload(VerificationRequest(payload=payload, tx_hash=tx_hash, item_id=manifest_id))
+    return verify_payload(
+        VerificationRequest(
+            payload=payload,
+            tx_hash=manifest.tx_hash,
+            item_id=manifest_id,
+            public_key=manifest.public_key,
+            signature=manifest.signature,
+            expected_hash=manifest.payload_hash,
+        )
+    )
 
 
 @router.get(
@@ -61,6 +70,9 @@ async def get_manifest_by_id(manifest_id: str, db: Session = Depends(get_db)):
     return {
         "payload": payload,
         "payload_hash": sha256_hex(payload),
+        "signature": manifest.signature,
+        "public_key": manifest.public_key,
+        "tx_hash": manifest.tx_hash,
     }
 
 @router.post(
