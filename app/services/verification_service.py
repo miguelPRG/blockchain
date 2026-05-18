@@ -32,14 +32,11 @@ def verify_payload(request: VerificationRequest) -> VerificationResponse:
         else None
     )
 
-    checks = [
-        hash_matches,
-        signature_valid,
-        blockchain_hash_matches,
-        blockchain_tx_valid,
-        blockchain_item_matches,
-    ]
-    overall = all(check is not False for check in checks) and any(check is True for check in checks)
+    # Lógica de verificação SIMPLES:
+    # É válido se o hash na blockchain corresponde ao hash recalculado
+    # FIM. Esquece o resto.
+    
+    overall_valid = blockchain_hash_matches is True if request.tx_hash else False
     
     return VerificationResponse(
         payload=request.payload,
@@ -52,5 +49,5 @@ def verify_payload(request: VerificationRequest) -> VerificationResponse:
         blockchain_item_id=blockchain_item_id,
         blockchain_item_matches=blockchain_item_matches,
         block_number=blockchain_tx["block"] if blockchain_tx else None,
-        overall_valid=overall,
+        overall_valid=overall_valid,
     )

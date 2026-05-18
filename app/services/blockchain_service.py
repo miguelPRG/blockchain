@@ -87,6 +87,11 @@ def anchor_hash(payload_hash: str, timestamp: int, item_id: str, signer_private_
         return AnchorResult(tx_hash=None, anchored=False, reason="Item ID not provided.")
 
     deploy_key_to_use = signer_private_key if signer_private_key else settings.private_key_for_deploy
+    
+    # Log which key is being used
+    key_source = "USER" if signer_private_key else "DEPLOY"
+    logger.info(f"[anchor_hash] Using {key_source} key for signing")
+    
     account = w3.eth.account.from_key(deploy_key_to_use)
     contract = w3.eth.contract(address=Web3.to_checksum_address(settings.contract_address), abi=ANCHOR_ABI)
     nonce = w3.eth.get_transaction_count(account.address, "pending")

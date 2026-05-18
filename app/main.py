@@ -1,6 +1,16 @@
 """Ponto de entrada FastAPI para rastreabilidade blockchain-only."""
 
 from contextlib import asynccontextmanager
+from pathlib import Path
+
+# Carregar .env no início da aplicação
+try:
+    from dotenv import load_dotenv
+    env_file = Path(__file__).parent.parent / ".env"
+    load_dotenv(env_file)
+except ImportError:
+    pass
+
 from eth_account import Account
 from fastapi import FastAPI
 from rich import print as rprint

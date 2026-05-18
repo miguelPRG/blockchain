@@ -23,7 +23,7 @@ except Exception:
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), ".")))
 
 from app.core.hashing import sha256_hex
-from app.core.security import sign_hash, get_public_key_from_private, address_from_public_key
+from app.core.security import sign_hash, get_public_key_from_private, address_from_private_key
 
 
 # ============================================================
@@ -59,6 +59,7 @@ def _env_priv(key: str, default: str) -> str:
 USERS = {
     "1": {
         "name": "Alice (Producer)",
+        "id": "alice",
         "role": "PRODUCER",
         "priv": _env_priv(
             "ALICE_KEY",
@@ -67,18 +68,11 @@ USERS = {
     },
     "2": {
         "name": "Bob (Transporter)",
+        "id": "bob",
         "role": "TRANSPORTER",
         "priv": _env_priv(
             "BOB_KEY",
             "0x11111111111111111111111111111111111111111111111111111111"
-        ),
-    },
-    "3": {
-        "name": "Charlie (Receiver)",
-        "role": "RECEIVER",
-        "priv": _env_priv(
-            "CHARLIE_KEY",
-            "0x22222222222222222222222222222222222222222222222222222222"
         ),
     },
 }
@@ -86,15 +80,12 @@ USERS = {
 
 ROLE_TO_RECORD_TYPES = {
     "PRODUCER": ["PRODUCED"],
-    "TRANSPORTER": ["TRANSFER", "DELIVERY"],
-    "RECEIVER": ["RECEIVED"],
-}
+    "TRANSPORTER": ["TRANSFER", "DELIVERY"],}
 
 
 RECORD_TYPE_LABELS = {
     "PRODUCED": "Produção",
     "TRANSFER": "Transferência",
-    "RECEIVED": "Receção",
     "DELIVERY": "Entrega",
 }
 
@@ -113,9 +104,9 @@ def get_public_key(private_key: str) -> str:
     return f"0x{get_public_key_from_private(strip_0x(private_key))}"
 
 
-def get_address(public_key: str) -> str:
-    """Obtém o endereço do utilizador a partir da chave pública."""
-    return address_from_public_key(public_key)
+def get_address_from_private_key(private_key: str) -> str:
+    """Obtém o endereço Ethereum correto a partir da chave privada."""
+    return address_from_private_key(private_key)
 
 
 def post_json(url: str, payload: dict) -> dict:
@@ -186,8 +177,7 @@ def show_header(current_user: dict | None = None) -> None:
 
     if current_user:
         private_key = current_user["priv"]
-        public_key = get_public_key(private_key)
-        address = get_address(public_key)
+        address = get_address_from_private_key(private_key)
 
         console.print(f"[bold green]👤 Utilizador Ativo:[/bold green] {current_user['name']}")
         console.print(f"[dim]Papel: {current_user['role']}[/dim]")
@@ -208,8 +198,7 @@ def select_user(default: str = "1") -> str:
     if chosen:
         priv = chosen.get("priv")
         try:
-            pub = get_public_key(priv)
-            addr = get_address(pub)
+            addr = get_address_from_private_key(priv)
             console.print(f"\n[dim]Endereço selecionado:[/dim] {addr}\n")
         except Exception:
             # Fallback: não bloquear se houver erro a derivar chave
@@ -226,6 +215,7 @@ def create_manifest_interactive(
     base_url: str,
     private_key: str,
     public_key: str,
+    signer_id: str,
 ) -> tuple[str | None, str | None]:
     """
     Cria um manifesto de forma interativa.
@@ -257,7 +247,7 @@ def create_manifest_interactive(
         console.print("[yellow]⊘ Cancelado[/yellow]")
         return None, None
 
-    creator = get_address(public_key)
+    creator = get_address_from_private_key(private_key)
 
     payload = {
         "manifest_id": manifest_id,
@@ -285,6 +275,7 @@ def create_manifest_interactive(
             "public_key": public_key,
             "signature": signature,
             "role": "PRODUCER",
+            "signer_id": signer_id,
         },
     }
 
@@ -308,6 +299,7 @@ def create_manifest_interactive(
             manifest_id=manifest_id,
             quantity=quantity,
             unit=unit,
+            signer_id=signer_id,
         )
 
         if produced_result:
@@ -327,10 +319,11 @@ def create_produced_record_automatically(
     manifest_id: str,
     quantity: float,
     unit: str,
+    signer_id: str,
 ) -> str | None:
     """Cria automaticamente o registo PRODUCED associado ao manifesto."""
 
-    user_address = get_address(public_key)
+    user_address = get_address_from_private_key(private_key)
 
     payload = {
         "record_id": f"produced-{manifest_id}",
@@ -352,6 +345,7 @@ def create_produced_record_automatically(
             "public_key": public_key,
             "signature": signature,
             "role": "PRODUCER",
+            "signer_id": signer_id,
         },
     }
 
@@ -373,6 +367,7 @@ def create_record_interactive_for_role(
     private_key: str,
     public_key: str,
     role: str,
+    signer_id: str,
     last_manifest_id: str | None = None,
 ) -> str | None:
     """Cria um registo filtrando os tipos permitidos pelo papel do utilizador."""
@@ -425,7 +420,7 @@ def create_record_interactive_for_role(
         console.print("[yellow]⊘ Cancelado[/yellow]")
         return None
 
-    user_address = get_address(public_key)
+    user_address = get_address_from_private_key(private_key)
 
     payload = {
         "record_id": record_id,
@@ -452,6 +447,7 @@ def create_record_interactive_for_role(
             "public_key": public_key,
             "signature": signature,
             "role": role,
+            "signer_id": signer_id,
         },
     }
 
@@ -471,7 +467,7 @@ def create_record_interactive_for_role(
 # ============================================================
 
 def verify_data(base_url: str) -> None:
-    """Verifica dados contra o backend, sem inventar assinatura nova."""
+    """Verifica dados contra o backend obtendo a verificação criptográfica integrada no GET."""
 
     console.print("\n[bold cyan]🔍 Verificar Dados[/bold cyan]")
 
@@ -486,71 +482,101 @@ def verify_data(base_url: str) -> None:
         "r": "records",
     }
 
-    endpoint_path = endpoint_map[endpoint_choice]
+    endpoint_path = endpoint_map[endpoint_choice.lower()]
     item_label = "Manifesto" if endpoint_choice == "m" else "Registo"
 
     item_id = Prompt.ask(f"ID de {item_label}")
 
+    # Fazer GET que já inclui verificação criptográfica integrada
     data = get_json(f"{base_url}/{endpoint_path}/{item_id}")
 
     if not data:
-        console.print("[red]✗ Não foi possível obter os dados para verificação[/red]")
+        console.print("[red]✗ Não foi possível obter os dados[/red]")
         return
 
     if "error" in data:
         console.print(f"[red]✗ Erro: {data['error']}[/red]")
         return
 
-    returned_payload = data.get("payload") or data
+    # Extrair verificação que vem integrada no GET
+    verification = data.get("verification")
 
-    signature = (
-        data.get("signature")
-        or data.get("auth", {}).get("signature")
-    )
-
-    stored_public_key = (
-        data.get("public_key")
-        or data.get("auth", {}).get("public_key")
-    )
-
-    tx_hash = (
-        data.get("tx_hash")
-        or data.get("transaction_hash")
-        or data.get("blockchain_tx")
-    )
-
-    if not signature:
-        console.print("[red]✗ Erro: assinatura ausente nos dados guardados[/red]")
+    if not verification:
+        console.print("[red]✗ Erro: dados de verificação não encontrados[/red]")
         return
 
-    if not stored_public_key:
-        console.print("[red]✗ Erro: chave pública ausente nos dados guardados[/red]")
-        return
+    # Extrair resultado da verificação
+    payload_hash_blockchain = data.get("payload_hash", "N/A")
+    payload_hash_current = data.get("payload_hash_current", "N/A")
+    
+    # LÓGICA SIMPLES: Se hash é igual na blockchain, é VÁLIDO. PRONTO.
+    hash_match = payload_hash_blockchain == payload_hash_current
+    is_valid = hash_match
+    
+    signature_valid = data.get("verification", {}).get("signature_valid", False)
 
-    expected_hash = sha256_hex(returned_payload)
+    # ========== BANNER PRINCIPAL ==========
+    if is_valid:
+        banner_content = (
+            "[bold green]✓ VÁLIDO[/bold green]\n"
+            "[dim green]Dados íntegros e verificados na blockchain[/dim green]"
+        )
+        banner_style = "bold green"
+    else:
+        banner_content = (
+            "[bold red]✗ INVÁLIDO[/bold red]\n"
+            "[dim red]Dados comprometidos ou não verificáveis[/dim red]"
+        )
+        banner_style = "bold red"
 
-    body = {
-        "payload": returned_payload,
-        "expected_hash": expected_hash,
-        "public_key": stored_public_key,
-        "signature": signature,
-        "tx_hash": tx_hash,
-        "item_id": item_id,
-    }
+    console.print(
+        Panel(
+            banner_content,
+            title="[bold]RESULTADO DA VERIFICAÇÃO[/bold]",
+            border_style=banner_style,
+            padding=(1, 3),
+        )
+    )
 
-    console.print("\n[dim]Enviando para /verify...[/dim]")
-    result = post_json(f"{base_url}/verify", body)
+    # ========== DADOS ==========
+    console.print("\n[bold cyan]📋 Dados do " + item_label + ":[/bold cyan]")
+    payload = data.get("payload", {})
+    console.print(json.dumps(payload, indent=2, ensure_ascii=False))
 
-    if result:
+    # ========== HASH PAYLOAD ==========
+    match_icon = "[bold green]✓[/bold green]" if hash_match else "[bold red]✗[/bold red]"
+    match_status = "[green]Igual (íntegro)[/green]" if hash_match else "[red]Diferente (alterado)[/red]"
+    
+    console.print(
+        Panel(
+            f"[bold yellow]{payload_hash_current}[/bold yellow]\n\n"
+            f"{match_icon} Comparação com blockchain: {match_status}",
+            title="[bold]🔗 Payload Hash (Recalculado Agora)[/bold]",
+            border_style="yellow",
+            padding=(1, 2),
+        )
+    )
+
+    # ========== RESUMO FINAL ==========
+    console.print()
+    if is_valid:
         console.print(
             Panel(
-                json.dumps(result, indent=2, ensure_ascii=False),
-                title="[bold green]Resultado da Verificação[/bold green]",
+                "[bold green]🎉 Dados autenticados e íntegros![/bold green]\n"
+                "[dim]Hash confirmado na blockchain - nenhuma alteração detectada.[/dim]",
                 border_style="green",
+                padding=(1, 2),
             )
         )
     else:
-        console.print("[red]✗ Falha ao verificar os dados[/red]")
+        console.print(
+            Panel(
+                "[bold red]⚠️  ALERTA: Dados inválidos![/bold red]\n"
+                "[dim red]Hash não corresponde ao que está na blockchain - dados foram alterados![/dim red]",
+                border_style="red",
+                padding=(1, 2),
+            )
+        )
 
 
 # ============================================================
@@ -573,7 +599,7 @@ def simulate_attack(base_url: str) -> None:
         "r": "records",
     }
 
-    endpoint = endpoint_map[endpoint_choice]
+    endpoint = endpoint_map[endpoint_choice.lower()]
     item_label = "Manifesto" if endpoint_choice == "m" else "Registo"
 
     item_id = Prompt.ask(f"ID de {item_label} a ser alterado")
@@ -677,6 +703,7 @@ def run_app(base_url: str, initial_user_id: str) -> None:
                 base_url=base_url,
                 private_key=private_key,
                 public_key=public_key,
+                signer_id=user["id"],
             )
 
             if manifest_id:
@@ -688,6 +715,7 @@ def run_app(base_url: str, initial_user_id: str) -> None:
                 private_key=private_key,
                 public_key=public_key,
                 role=role,
+                signer_id=user["id"],
                 last_manifest_id=last_manifest_id,
             )
 

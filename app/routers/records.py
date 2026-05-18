@@ -7,7 +7,7 @@ from app.core.database import get_db
 from app.core.hashing import sha256_hex
 from app.models.record import Record as RecordModel
 from app.schemas.record import RecordCreateRequest, RecordResponse
-from app.schemas.verification import VerificationRequest, VerificationResponse
+from app.schemas.verification import VerificationRequest
 from app.services.record_service import create_record
 from app.services.verification_service import verify_payload
 
@@ -39,21 +39,21 @@ async def create_record_endpoint(request: RecordCreateRequest, db: Session = Dep
 
 
 @router.get(
-    "/{record_id}/verify",
-    summary="Verificar registo contra blockchain",
-    description="Recalcula a hash do payload off-chain e compara com a hash ancorada na transação blockchain.",
-    response_model=VerificationResponse,
+    "/{record_id}",
+    summary="Obter registro por ID com verificação criptográfica",
+    description="Recupera um registo específico com metadados, prova de ancoragem blockchain e verificação criptográfica integrada.",
+    response_model=dict,
 )
-async def verify_record_endpoint(
-    record_id: str,
-    db: Session = Depends(get_db),
-) -> VerificationResponse:
+async def get_record_by_id(record_id: str, db: Session = Depends(get_db)):
     record = db.query(RecordModel).filter(RecordModel.record_id == record_id).first()
     if not record:
         raise HTTPException(status_code=404, detail=f"Registro '{record_id}' não encontrado")
 
     payload = _record_payload(record)
-    return verify_payload(
+    payload_hash_current = sha256_hex(payload)
+
+    # Realizar verificação criptográfica integrada
+    verification = verify_payload(
         VerificationRequest(
             payload=payload,
             tx_hash=record.tx_hash,
@@ -64,26 +64,14 @@ async def verify_record_endpoint(
         )
     )
 
-
-@router.get(
-    "/{record_id}",
-    summary="Obter registro por ID",
-    description="Recupera um registo específico com metadados e prova de ancoragem blockchain.",
-    response_model=dict,
-)
-async def get_record_by_id(record_id: str, db: Session = Depends(get_db)):
-    record = db.query(RecordModel).filter(RecordModel.record_id == record_id).first()
-    if not record:
-        raise HTTPException(status_code=404, detail=f"Registro '{record_id}' não encontrado")
-
-    payload = _record_payload(record)
-
     return {
         "payload": payload,
-        "payload_hash": sha256_hex(payload),
+        "payload_hash": record.payload_hash,  # O que foi realmente ancorado na blockchain
+        "payload_hash_current": payload_hash_current,  # O calculado agora para comparação
         "signature": record.signature,
         "public_key": record.public_key,
         "tx_hash": record.tx_hash,
+        "verification": verification.model_dump(),
     }
 
 from pydantic import BaseModel

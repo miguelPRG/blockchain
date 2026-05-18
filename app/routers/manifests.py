@@ -7,7 +7,7 @@ from app.core.database import get_db
 from app.core.hashing import sha256_hex
 from app.models.manifest import Manifest as ManifestModel
 from app.schemas.manifest import ManifestCreateRequest, ManifestResponse
-from app.schemas.verification import VerificationRequest, VerificationResponse
+from app.schemas.verification import VerificationRequest
 from app.services.manifest_service import create_manifest
 from app.services.verification_service import verify_payload
 
@@ -28,21 +28,21 @@ def _manifest_payload(manifest: ManifestModel) -> dict:
     }
 
 @router.get(
-    "/{manifest_id}/verify",
-    summary="Verificar manifesto contra blockchain",
-    description="Recalcula a hash do payload off-chain e compara com a hash ancorada na transação blockchain.",
-    response_model=VerificationResponse,
+    "/{manifest_id}",
+    summary="Obter manifesto por ID com verificação criptográfica",
+    description="Recupera um manifesto específico com metadados, prova de ancoragem blockchain e verificação criptográfica integrada.",
+    response_model=dict,
 )
-async def verify_manifest_endpoint(
-    manifest_id: str,
-    db: Session = Depends(get_db),
-) -> VerificationResponse:
+async def get_manifest_by_id(manifest_id: str, db: Session = Depends(get_db)):
     manifest = db.query(ManifestModel).filter(ManifestModel.manifest_id == manifest_id).first()
     if not manifest:
         raise HTTPException(status_code=404, detail=f"Manifesto '{manifest_id}' não encontrado")
 
     payload = _manifest_payload(manifest)
-    return verify_payload(
+    payload_hash_current = sha256_hex(payload)
+
+    # Realizar verificação criptográfica integrada
+    verification = verify_payload(
         VerificationRequest(
             payload=payload,
             tx_hash=manifest.tx_hash,
@@ -53,26 +53,14 @@ async def verify_manifest_endpoint(
         )
     )
 
-
-@router.get(
-    "/{manifest_id}",
-    summary="Obter manifesto por ID",
-    description="Recupera um manifesto específico com metadados e prova de ancoragem blockchain.",
-    response_model=dict,
-)
-async def get_manifest_by_id(manifest_id: str, db: Session = Depends(get_db)):
-    manifest = db.query(ManifestModel).filter(ManifestModel.manifest_id == manifest_id).first()
-    if not manifest:
-        raise HTTPException(status_code=404, detail=f"Manifesto '{manifest_id}' não encontrado")
-
-    payload = _manifest_payload(manifest)
-
     return {
         "payload": payload,
-        "payload_hash": sha256_hex(payload),
+        "payload_hash": manifest.payload_hash,  # O que foi realmente ancorado na blockchain
+        "payload_hash_current": payload_hash_current,  # O calculado agora para comparação
         "signature": manifest.signature,
         "public_key": manifest.public_key,
         "tx_hash": manifest.tx_hash,
+        "verification": verification.model_dump(),
     }
 
 @router.post(

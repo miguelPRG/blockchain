@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 
 from app.core.hashing import sha256_hex, canonical_json_readable
-from app.core.security import verify_signature, address_from_public_key, get_private_key_from_public
+from app.core.security import verify_signature, address_from_private_key, get_private_key_from_signer_id
 from app.schemas.record import RecordCreateRequest, RecordResponse, RecordType
 from app.models.manifest import Manifest as ManifestModel
 from app.models.record import Record as RecordModel
@@ -52,12 +52,20 @@ def create_record(db: Session, request: RecordCreateRequest) -> RecordResponse:
     """
     payload = request.payload
     logger.info(f"Criando registo para manifesto: {payload.manifest_id}")
-    user_address = address_from_public_key(request.auth.public_key)
+    
+    # Derivar endereço correto a partir da chave privada do signer_id
+    signer_priv = get_private_key_from_signer_id(request.auth.signer_id)
+    if not signer_priv:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Signer ID '{request.auth.signer_id}' not found in environment.",
+        )
+    user_address = address_from_private_key(signer_priv)
 
     if payload.user != user_address:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Record user does not match the public key.",
+            detail=f"Record user {payload.user} does not match signer {user_address}.",
         )
 
     if request.auth.role not in ROLE_ALLOWED_RECORD_TYPES:
@@ -135,7 +143,7 @@ def create_record(db: Session, request: RecordCreateRequest) -> RecordResponse:
     unix_timestamp = int(timestamp_dt.timestamp())
 
     # Ancorar o hash na blockchain
-    signer_priv = get_private_key_from_public(request.auth.public_key)
+    logger.info(f"[create_record] signer_id={request.auth.signer_id} signer_priv={'FOUND' if signer_priv else 'NOT FOUND'}")
     anchor = anchor_hash(
         payload_hash=payload_hash,
         timestamp=unix_timestamp,

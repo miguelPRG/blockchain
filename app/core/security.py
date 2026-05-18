@@ -3,6 +3,7 @@
 import hashlib
 
 from ecdsa import BadSignatureError, SECP256k1, SigningKey, VerifyingKey
+from eth_account import Account
 
 
 def sign_hash(private_key_hex: str, hash_hex: str) -> str:
@@ -49,14 +50,71 @@ def verify_signature(public_key_hex: str, hash_hex: str, signature_hex: str) -> 
         return False
 
 
+def address_from_private_key(private_key_hex: str) -> str:
+    """Derivar endereço Ethereum correto (20 bytes) a partir da chave privada.
+    
+    Usa Keccak-256 (correto para Ethereum), não SHA-256.
+    - private_key_hex: Chave privada com ou sem prefixo 0x
+    """
+    try:
+        account = Account.from_key(private_key_hex)
+        return account.address
+    except Exception:
+        return "0x0000000000000000000000000000000000000000"
+
+
 def address_from_public_key(public_key_hex: str) -> str:
     """Derivar endereço Ethereum-like (0x + 40 hex chars) da chave pública.
+    
+    ⚠️ DEPRECADO: Use address_from_private_key() para endereços corretos.
+    Esta função usa SHA-256 (incorreto) e está mantida por compatibilidade.
     
     - public_key_hex: Chave pública (identificador único do utilizador)
     """
     clean_hex = public_key_hex[2:] if public_key_hex.startswith("0x") else public_key_hex
     digest = hashlib.sha256(bytes.fromhex(clean_hex)).hexdigest()
     return f"0x{digest[-40:]}"
+
+
+def get_private_key_from_signer_id(signer_id: str | None) -> str | None:
+    """Recupera a chave privada a partir do ID do utilizador (alice/bob/charlie).
+    
+    Args:
+        signer_id: ID do utilizador ("alice", "bob", "charlie", etc.)
+    
+    Returns:
+        Chave privada com prefixo 0x, ou None se não encontrada
+    """
+    import os
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+    if not signer_id:
+        logger.warning("[get_private_key_from_signer_id] signer_id is empty")
+        return None
+
+    signer_id_lower = signer_id.lower()
+    
+    # Mapear ID para variável de ambiente
+    env_map = {
+        "alice": "ALICE_KEY",
+        "bob": "BOB_KEY",
+        "charlie": "CHARLIE_KEY",
+    }
+    
+    env_var = env_map.get(signer_id_lower)
+    if not env_var:
+        logger.warning(f"[get_private_key_from_signer_id] Unknown signer_id: {signer_id}")
+        return None
+    
+    priv = os.getenv(env_var)
+    if not priv:
+        logger.warning(f"[get_private_key_from_signer_id] {env_var} not set in environment")
+        return None
+    
+    logger.info(f"[get_private_key_from_signer_id] ✓ FOUND: {env_var}")
+    return priv if priv.startswith("0x") else f"0x{priv}"
 
 
 def get_private_key_from_public(public_key_hex: str) -> str | None:
@@ -66,30 +124,40 @@ def get_private_key_from_public(public_key_hex: str) -> str | None:
     Retorna a chave privada com prefixo `0x` quando encontrada, ou `None`.
     """
     import os
+    import logging
+
+    logger = logging.getLogger(__name__)
 
     if not public_key_hex:
+        logger.warning("[get_private_key_from_public] Public key is empty")
         return None
 
     clean_target = public_key_hex[2:] if public_key_hex.startswith("0x") else public_key_hex
     # Normalize to lower-case for comparison
     clean_target = clean_target.lower()
+    logger.info(f"[get_private_key_from_public] Looking for: {clean_target[:16]}...")
 
     candidates = [
-        os.getenv("ALICE_KEY"),
-        os.getenv("BOB_KEY"),
-        os.getenv("CHARLIE_KEY"),
+        ("ALICE_KEY", os.getenv("ALICE_KEY")),
+        ("BOB_KEY", os.getenv("BOB_KEY")),
+        ("CHARLIE_KEY", os.getenv("CHARLIE_KEY")),
     ]
 
-    for priv in candidates:
+    for env_name, priv in candidates:
         if not priv:
+            logger.debug(f"[get_private_key_from_public] {env_name} not set")
             continue
         clean_priv = priv[2:] if priv.startswith("0x") else priv
         try:
             pub = get_public_key_from_private(clean_priv)
-        except Exception:
+            clean_pub = pub.lower()
+            logger.debug(f"[get_private_key_from_public] {env_name}: pub={clean_pub[:16]}...")
+            if clean_pub == clean_target:
+                logger.info(f"[get_private_key_from_public] ✓ FOUND: {env_name}")
+                return priv if priv.startswith("0x") else f"0x{priv}"
+        except Exception as e:
+            logger.error(f"[get_private_key_from_public] {env_name} error: {e}")
             continue
-        clean_pub = pub.lower()
-        if clean_pub == clean_target:
-            return priv if priv.startswith("0x") else f"0x{priv}"
 
+    logger.warning(f"[get_private_key_from_public] NO MATCH found for public key {clean_target[:16]}...")
     return None
