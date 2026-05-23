@@ -13,7 +13,6 @@ from app.core.security import verify_signature, address_from_private_key, get_pr
 from app.schemas.manifest import ManifestCreateRequest, ManifestResponse
 from app.models.manifest import Manifest as ManifestModel
 from app.services.blockchain_service import anchor_hash, decode_anchor_tx
-from app.services.deploy_service import auto_deploy_if_needed
 
 logger = logging.getLogger(__name__)
 
@@ -74,10 +73,6 @@ def create_manifest(db: Session, request: ManifestCreateRequest) -> ManifestResp
     if not verify_signature(request.auth.public_key, payload_hash, request.auth.signature):
         logger.error(f"Signature verification failed for hash: {payload_hash}")
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid ECDSA signature.")
-
-    # Garantir que contrato está deploiado
-    if not auto_deploy_if_needed(verbose=True):
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to deploy contract.")
 
     # Converter timestamp ISO para Unix timestamp para a blockchain
     timestamp_dt = datetime.fromisoformat(payload.timestamp)

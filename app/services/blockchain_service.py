@@ -81,12 +81,12 @@ def anchor_hash(payload_hash: str, timestamp: int, item_id: str, signer_private_
     if not settings.contract_address or settings.contract_address == "0x0000000000000000000000000000000000000000":
         return AnchorResult(tx_hash=None, anchored=False, reason="Contract address not configured.")
     # If no signer_private_key provided, fall back to server deploy key
-    if not signer_private_key and not settings.private_key_for_deploy:
+    if not signer_private_key and not settings.manager_key:
         return AnchorResult(tx_hash=None, anchored=False, reason="Private key not configured.")
     if not item_id or not item_id.strip():
         return AnchorResult(tx_hash=None, anchored=False, reason="Item ID not provided.")
 
-    deploy_key_to_use = signer_private_key if signer_private_key else settings.private_key_for_deploy
+    deploy_key_to_use = signer_private_key if signer_private_key else settings.manager_key
     
     # Log which key is being used
     key_source = "USER" if signer_private_key else "DEPLOY"

@@ -13,7 +13,6 @@ from app.schemas.record import RecordCreateRequest, RecordResponse, RecordType
 from app.models.manifest import Manifest as ManifestModel
 from app.models.record import Record as RecordModel
 from app.services.blockchain_service import anchor_hash, decode_anchor_tx
-from app.services.deploy_service import auto_deploy_if_needed
 
 logger = logging.getLogger(__name__)
 
@@ -98,29 +97,6 @@ def create_record(db: Session, request: RecordCreateRequest) -> RecordResponse:
             detail=f"Manifest '{payload.manifest_id}' does not exist in repository. Create it first."
         )
 
-    produced_total = sum(
-        record.quantity
-        for record in db.query(RecordModel).filter(RecordModel.manifest_id == payload.manifest_id).all()
-        if record.record_type == RecordType.PRODUCED.value
-    )
-    available_stock = _available_stock(db, payload.manifest_id)
-
-    if payload.record_type == RecordType.PRODUCED:
-        if produced_total + payload.quantity > manifest.quantity:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=(
-                    f"Produced quantity would exceed manifest total quantity "
-                    f"({produced_total + payload.quantity} > {manifest.quantity})."
-                ),
-            )
-    elif payload.record_type in {RecordType.TRANSFER, RecordType.DELIVERY}:
-        if payload.quantity > available_stock:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Operation quantity ({payload.quantity}) exceeds available stock ({available_stock}).",
-            )
-
     # Calcular hash do payload
     payload_dict = payload.model_dump(mode='json')
     canonical_readable = canonical_json_readable(payload_dict)
@@ -133,10 +109,6 @@ def create_record(db: Session, request: RecordCreateRequest) -> RecordResponse:
     if not verify_signature(request.auth.public_key, payload_hash, request.auth.signature):
         logger.error(f"Signature verification failed for hash: {payload_hash}")
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid ECDSA signature.")
-
-    # Garantir que contrato está deploiado
-    if not auto_deploy_if_needed(verbose=False):
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to deploy contract.")
 
     # Converter timestamp ISO para Unix timestamp
     timestamp_dt = datetime.fromisoformat(payload.timestamp)

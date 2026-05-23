@@ -12,7 +12,7 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:///./supply_chain.db"
     sepolia_rpc_url: str = Field(..., alias="SEPOLIA_RPC_URL") 
     contract_address: str = Field(default="0x0000000000000000000000000000000000000000", alias="CONTRACT_ADDRESS")
-    private_key_for_deploy: str = Field(..., alias="PRIVATE_KEY_FOR_DEPLOY")
+    manager_key: str = Field(..., alias="MANAGER_KEY") # Chave privada para deploy e operações administrativas
 
     model_config = SettingsConfigDict(
         env_file=str(Path(__file__).parent.parent.parent / ".env"),

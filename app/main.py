@@ -23,6 +23,7 @@ from app.routers.records import router as records_router
 from app.routers.verification import router as verification_router
 from app.routers.config import router as config_router
 from app.services.blockchain_service import check_connection_status
+from app.services.deploy_service import auto_deploy_if_needed
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
@@ -37,7 +38,7 @@ async def lifespan(_: FastAPI):
     rprint(f"[bold green]⚡ Modo:[/bold green] Híbrido (SQLite + Blockchain)")
     
     # Verificar chave privada
-    private_key = settings.private_key_for_deploy
+    private_key = settings.manager_key
     if private_key:
         try:
             # Adicionar prefixo 0x se não tiver
@@ -49,7 +50,10 @@ async def lifespan(_: FastAPI):
         except Exception as e:
             rprint(f"[bold red]✗ Erro na chave privada:[/bold red] {e}")
     else:
-        rprint(f"[bold red]✗ PRIVATE_KEY_FOR_DEPLOY não configurada[/bold red]")
+        rprint(f"[bold red]✗ MANAGER_KEY não configurada[/bold red]")
+    
+    # Deploy automático do contrato se necessário
+    auto_deploy_if_needed(verbose=True)
 
     yield
 

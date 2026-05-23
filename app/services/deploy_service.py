@@ -151,9 +151,9 @@ def deploy_contract(compiled: dict) -> str:
     if not settings.sepolia_rpc_url:
         logger.error("SEPOLIA_RPC_URL não configurada")
         raise ValueError("SEPOLIA_RPC_URL não configurada")
-    if not settings.private_key_for_deploy:
-        logger.error("PRIVATE_KEY_FOR_DEPLOY não configurada")
-        raise ValueError("PRIVATE_KEY_FOR_DEPLOY não configurada")
+    if not settings.manager_key:
+        logger.error("MANAGER_KEY não configurada")
+        raise ValueError("MANAGER_KEY não configurada")
     
     logger.debug(f"Conectando a: {settings.sepolia_rpc_url}")
     w3 = Web3(Web3.HTTPProvider(settings.sepolia_rpc_url))
@@ -164,7 +164,7 @@ def deploy_contract(compiled: dict) -> str:
     logger.debug("Conectado com sucesso a Sepolia")
     rprint("[green]✓ Conectado a Sepolia![/green]")
     
-    account = w3.eth.account.from_key(settings.private_key_for_deploy)
+    account = w3.eth.account.from_key(settings.manager_key)
     logger.debug(f"Conta: {account.address}")
     rprint(f"[dim]Conta: {account.address}[/dim]")
     
@@ -210,7 +210,7 @@ def deploy_contract(compiled: dict) -> str:
         
         rprint("\n[bold]🔐 Assinando e enviando transação...[/bold]")
         logger.info("Assinando transação")
-        signed_tx = w3.eth.account.sign_transaction(tx, settings.private_key_for_deploy)
+        signed_tx = w3.eth.account.sign_transaction(tx, settings.manager_key)
         
         logger.info("Enviando transação assinada")
         tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
@@ -290,7 +290,7 @@ def deploy_anchor_contract() -> str | None:
     
     try:
         w3_temp = Web3()
-        account = w3_temp.eth.account.from_key(settings.private_key_for_deploy)
+        account = w3_temp.eth.account.from_key(settings.manager_key)
         rprint(f"Conta: {account.address}")
     except:
         rprint("[yellow]⚠ Aviso: Não consegui ler conta[/yellow]")
