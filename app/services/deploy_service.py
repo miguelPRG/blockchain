@@ -6,8 +6,6 @@ from pathlib import Path
 from web3 import Web3
 import solcx
 from rich import print as rprint
-from rich.panel import Panel
-from rich.prompt import Confirm
 
 from app.core.settings import settings
 
@@ -46,21 +44,26 @@ def is_contract_deployed() -> bool:
         return False
 
 
-def auto_deploy_if_needed(verbose: bool = False) -> bool:
-    """Fazer deployment automático se ainda não estiver publicado."""
-    if is_contract_deployed():
-        if verbose:
-            rprint("[green]✓ Contrato já publicado[/green]")
-        return True
+def auto_deploy_if_needed(verbose: bool = False) -> str | None:
+    """Fazer deployment automático se ainda não estiver publicado.
+    
+    Returns:
+        Endereço do contrato (novo ou existente), ou None se falhou
+    """
+    # Se já tem contrato configurado, verificar se está deployado
+    if settings.contract_address and settings.contract_address != "0x0":
+        if is_contract_deployed():
+            if verbose:
+                rprint(f"[green]✓ Contrato já publicado: {settings.contract_address}[/green]")
+            return settings.contract_address
     
     logger.info("Iniciando deployment automático")
     if verbose:
         rprint("\n[bold yellow]⚙️ Iniciando deployment automático...[/bold yellow]")
     
     try:
-        project_root = Path(__file__).parent.parent.parent
+        project_root = Path(__file__).parent.parent
         solidity_file = project_root / "contracts" / "Anchor.sol"
-        env_file = project_root / ".env"
         
         if verbose:
             rprint("[dim]📝 Compilando contrato...[/dim]")
@@ -71,24 +74,17 @@ def auto_deploy_if_needed(verbose: bool = False) -> bool:
         contract_address = deploy_contract(compiled)
         
         if verbose:
-            rprint("[dim]📝 Atualizando .env...[/dim]")
-        update_env_file(contract_address, env_file)
-        
-        # Recarregar settings em tempo de execução
-        settings.reload_contract_address()
-        
-        if verbose:
             rprint(f"[green]✅ Contrato publicado: {contract_address}[/green]")
         
         logger.info(f"Contrato publicado com sucesso: {contract_address}")
-        return True
+        return contract_address
     except Exception as e:
         logger.error(f"Erro no deployment automático: {e}", exc_info=True)
         sys.stderr.write(f"\n[DEPLOY ERROR] {e}\n")
         sys.stderr.flush()
         if verbose:
             rprint(f"[red]✗ Erro: {e}[/red]")
-        return False
+        return None
 
 
 def compile_contract(solidity_file: Path) -> dict:
@@ -185,28 +181,92 @@ def deploy_contract(compiled: dict) -> str:
     try:
         logger.debug("Criando contrato Web3")
         Contract = w3.eth.contract(abi=abi, bytecode=bytecode)
+        
+        # Obter saldo e nonce
         nonce = w3.eth.get_transaction_count(account.address)
+        balance_wei = w3.eth.get_balance(account.address)
+        balance_eth = w3.from_wei(balance_wei, 'ether')
+        
+        logger.info(f"Saldo da conta: {balance_eth:.6f} ETH ({balance_wei} wei)")
+        rprint(f"[cyan]Saldo da conta: {balance_eth:.6f} ETH[/cyan]")
+        
+        if balance_eth < 0.001:
+            raise ValueError(f"Saldo insuficiente: {balance_eth:.6f} ETH (mínimo: 0.001 ETH)")
+        
+        # Obter gas price
         gas_price = w3.eth.gas_price
+        logger.debug(f"Gas Price RPC: {gas_price} wei ({w3.from_wei(gas_price, 'gwei'):.2f} gwei)")
         
-        logger.debug(f"Nonce: {nonce}, Gas Price: {gas_price}")
+        # Usar gas price razoável (5-20 gwei para Sepolia)
+        min_gas_price = w3.to_wei(5, 'gwei')
+        max_gas_price = w3.to_wei(50, 'gwei')
         
+        if gas_price < min_gas_price:
+            gas_price = min_gas_price
+            logger.info(f"Gas price aumentado para {w3.from_wei(gas_price, 'gwei'):.2f} gwei")
+        elif gas_price > max_gas_price:
+            gas_price = w3.to_wei(10, 'gwei')  # Usar um valor fixo se estiver muito alto
+            logger.info(f"Gas price reduzido para {w3.from_wei(gas_price, 'gwei'):.2f} gwei")
+        
+        rprint(f"[dim]Nonce: {nonce}, Gas Price: {w3.from_wei(gas_price, 'gwei'):.2f} gwei[/dim]")
+        
+        # Tentar estimar gas com RETRY
+        gas_limit = None
+        for attempt in range(3):
+            try:
+                logger.debug(f"Estimando gas (tentativa {attempt + 1}/3)...")
+                
+                # Construir tx SEM gas para estimação
+                tx = Contract.constructor().build_transaction({
+                    "from": account.address,
+                    "nonce": nonce,
+                    "gasPrice": gas_price,
+                })
+                
+                estimated_gas = w3.eth.estimate_gas(tx)
+                gas_limit = int(estimated_gas * 1.15)  # 15% de margem
+                logger.info(f"Gas estimado: {estimated_gas}, com margem: {gas_limit}")
+                rprint(f"[green]✓ Gas estimado: {gas_limit}[/green]")
+                break
+            
+            except Exception as estimate_err:
+                logger.warning(f"Falha na estimação (tentativa {attempt + 1}): {estimate_err}")
+                if attempt < 2:
+                    import time
+                    wait = (attempt + 1) * 2
+                    logger.info(f"Aguardando {wait}s antes de tentar novamente...")
+                    rprint(f"[yellow]⏳ Aguardando {wait}s antes de tentar novamente...[/yellow]")
+                    time.sleep(wait)
+        
+        # Se estimação falhou completamente, usar fallback conservador
+        if gas_limit is None:
+            gas_limit = 2500000  # Fallback para Anchor.sol
+            logger.info(f"Usando fallback de gas: {gas_limit}")
+            rprint(f"[yellow]Usando fallback de gas: {gas_limit}[/yellow]")
+        
+        # Verificar custo total
+        total_cost_wei = gas_limit * gas_price
+        total_cost_eth = w3.from_wei(total_cost_wei, 'ether')
+        
+        logger.info(f"Custo total estimado: {total_cost_eth:.6f} ETH")
+        rprint(f"[dim]Custo total: {total_cost_eth:.6f} ETH[/dim]")
+        
+        if balance_wei < total_cost_wei:
+            raise ValueError(
+                f"Saldo insuficiente:\n"
+                f"  Saldo: {balance_eth:.6f} ETH\n"
+                f"  Custo: {total_cost_eth:.6f} ETH\n"
+                f"  Diferença: {(total_cost_eth - balance_eth):.6f} ETH"
+            )
+        
+        # Construir e enviar transação
+        logger.debug("Construindo transação final...")
         tx = Contract.constructor().build_transaction({
             "from": account.address,
             "nonce": nonce,
-            "gas": 3000000,  # Limite inicial aumentado (deployment pode exigir mais)
+            "gas": gas_limit,
             "gasPrice": gas_price,
         })
-        
-        logger.debug("Estimando gas")
-        try:
-            estimated_gas = w3.eth.estimate_gas(tx)
-            tx["gas"] = estimated_gas + 100000  # Margem de segurança
-            logger.debug(f"Gas estimado: {tx['gas']}")
-        except Exception as e:
-            logger.warning(f"Falha ao estimar gas: {e}. Usando fallback: 3M")
-            # Fallback: limite conservador para contrato com arrays e eventos
-            # Anchor.sol = ~1.5M-2M real, 3M seguro para Sepolia
-            tx["gas"] = 3000000
         
         rprint("\n[bold]🔐 Assinando e enviando transação...[/bold]")
         logger.info("Assinando transação")
@@ -237,91 +297,49 @@ def deploy_contract(compiled: dict) -> str:
         raise
 
 
-def update_env_file(contract_address: str, env_file: Path) -> None:
-    """Atualizar .env com contract address."""
-    logger.info(f"Atualizando .env com: {contract_address}")
-    content = env_file.read_text() if env_file.exists() else ""
-    lines = content.split("\n")
-    
-    found = False
-    for i, line in enumerate(lines):
-        if line.startswith("CONTRACT_ADDRESS="):
-            lines[i] = f"CONTRACT_ADDRESS={contract_address}"
-            found = True
-            break
-    
-    if not found:
-        lines.append(f"CONTRACT_ADDRESS={contract_address}")
-    
-    env_file.write_text("\n".join(lines))
-    logger.debug(f".env atualizado")
-    rprint(f"[green]✓ .env atualizado[/green]")
-
-
-def verify_deployment(contract_address: str) -> None:
-    """Verificar se deployment funcionou."""
-    logger.info(f"Verificando deployment: {contract_address}")
-    rprint("\n[bold cyan]✔️ Verificando...[/bold cyan]")
-    try:
-        w3 = Web3(Web3.HTTPProvider(settings.sepolia_rpc_url))
-        code = w3.eth.get_code(contract_address)
-        if code and len(code) > 2:
-            logger.info("Contrato verificado na blockchain")
-            rprint("[green]✓ Verificado na blockchain![/green]")
-        else:
-            logger.error("Contrato não encontrado na blockchain")
-            rprint("[red]✗ Contrato não encontrado[/red]")
-    except Exception as e:
-        logger.error(f"Erro na verificação: {e}", exc_info=True)
-        rprint(f"[red]✗ Erro: {e}[/red]")
-
-
-def deploy_anchor_contract() -> str | None:
-    """Executar deployment completo."""
-    project_root = Path(__file__).parent.parent.parent
-    solidity_file = project_root / "contracts" / "Anchor.sol"
-    env_file = project_root / ".env"
-    
-    rprint(Panel(
-        "[bold cyan]🍺 Deploy Anchor → Sepolia[/bold cyan]",
-        title="[bold]Deployment[/bold]",
-        border_style="cyan"
-    ))
+def diagnose_account() -> dict:
+    """Diagnosticar estado da conta e rede."""
+    result = {
+        "connected": False,
+        "account": None,
+        "balance_eth": 0,
+        "balance_wei": 0,
+        "gas_price_gwei": 0,
+        "nonce": 0,
+        "error": None
+    }
     
     try:
-        w3_temp = Web3()
-        account = w3_temp.eth.account.from_key(settings.manager_key)
-        rprint(f"Conta: {account.address}")
-    except:
-        rprint("[yellow]⚠ Aviso: Não consegui ler conta[/yellow]")
-    
-    if not Confirm.ask("\nProsseguir?"):
-        rprint("[red]Cancelado[/red]")
-        return None
-    
-    try:
-        compiled = compile_contract(solidity_file)
-        contract_address = deploy_contract(compiled)
-        update_env_file(contract_address, env_file)
-        verify_deployment(contract_address)
+        if not settings.sepolia_rpc_url:
+            result["error"] = "SEPOLIA_RPC_URL não configurada"
+            return result
         
-        rprint(Panel(
-            f"[bold green]✅ Sucesso![/bold green]\n\n"
-            f"{contract_address}\n\n"
-            f"https://sepolia.etherscan.io/address/{contract_address}",
-            border_style="green"
-        ))
-        return contract_address
+        if not settings.manager_key:
+            result["error"] = "MANAGER_KEY não configurada"
+            return result
+        
+        w3 = Web3(Web3.HTTPProvider(settings.sepolia_rpc_url))
+        
+        if not w3.is_connected():
+            result["error"] = "Falha ao conectar ao RPC endpoint"
+            return result
+        
+        result["connected"] = True
+        
+        account = w3.eth.account.from_key(settings.manager_key)
+        result["account"] = account.address
+        
+        balance_wei = w3.eth.get_balance(account.address)
+        result["balance_wei"] = balance_wei
+        result["balance_eth"] = float(w3.from_wei(balance_wei, 'ether'))
+        
+        gas_price = w3.eth.gas_price
+        result["gas_price_gwei"] = float(w3.from_wei(gas_price, 'gwei'))
+        
+        result["nonce"] = w3.eth.get_transaction_count(account.address)
+        
+        return result
+    
     except Exception as e:
-        logger.error(f"Erro no deployment: {e}", exc_info=True)
-        rprint(Panel(f"[bold red]❌ Erro[/bold red]\n\n{str(e)}", border_style="red"))
-        return None
-
-
-def main():
-    """Entry point."""
-    deploy_anchor_contract()
-
-
-if __name__ == "__main__":
-    main()
+        result["error"] = str(e)
+        return result

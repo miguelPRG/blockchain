@@ -6,6 +6,7 @@ import json
 import sys
 import logging
 import os
+from pathlib import Path
 from datetime import datetime, timezone
 from urllib import request as urlrequest
 
@@ -19,11 +20,12 @@ except Exception:
     # dotenv is optional; if not installed, environment variables must be set externally
     pass
 
-# Adicionar PYTHONPATH para importar do app
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), ".")))
+# Adicionar PYTHONPATH para importar da raiz
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from app.core.hashing import sha256_hex
-from app.core.security import sign_hash, get_public_key_from_private, address_from_private_key
+# Importações de funções criptográficas compartilhadas
+from shared.hashing import sha256_hex
+from shared.security import sign_hash, get_public_key_from_private, address_from_private_key
 
 
 # ============================================================
@@ -42,45 +44,347 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 console = Console()
 
+# URL da API FastAPI
+BASE_URL = "http://127.0.0.1:8000"
+SUPPLY_MANAGER_ADDRESS = "0x9D77a7336C19eE8975Eb6267c2aF384B90C73455"
+
 
 # ============================================================
-# Utilizadores de teste (carregam chaves privadas a partir do ambiente)
+# Funções de Inicialização - Verificar e Autenticar Contrato
 # ============================================================
-# Se estiver a usar um ficheiro .env, instale e use `python-dotenv` ou exporte
-# as variáveis `PRIVATE_KEY_1`, `PRIVATE_KEY_2`, `PRIVATE_KEY_3` no seu ambiente.
 
-def _env_priv(key: str, default: str) -> str:
-    """Lê uma chave privada do ambiente; garante prefixo 0x se necessário."""
-    v = os.getenv(key)
-    if v:
-        return v if v.startswith("0x") else f"0x{v}"
-    return default
+def deploy_contract_via_api() -> str | None:
+    """
+    Fazer deployment de um novo contrato via API.
+    
+    Requer que o Supply Manager tenha sido autenticado.
+    
+    Returns:
+        Endereço do contrato, ou None se falhou
+    """
+    try:
+        req = urlrequest.Request(
+            url=f"{BASE_URL}/config/deploy-contract",
+            method="POST",
+            data=b"{}",
+        )
+        req.add_header("Content-Type", "application/json")
+        
+        with urlrequest.urlopen(req) as resp:  # noqa: S310
+            result = json.loads(resp.read().decode("utf-8"))
+            
+            if result.get("success"):
+                contract_addr = result.get("contract_address")
+                console.print(f"[bold green]✓ Contrato deployado:[/bold green] {contract_addr}")
+                console.print(f"[dim]Explorer: {result.get('explorer_url')}[/dim]")
+                return contract_addr
+            else:
+                console.print(f"[red]✗ Falha no deployment[/red]")
+                return None
+    
+    except urlrequest.HTTPError as e:
+        try:
+            error_detail = json.loads(e.read().decode("utf-8"))
+            console.print(f"[red]✗ Erro:[/red] {error_detail.get('detail', str(error_detail))}")
+        except Exception:
+            console.print(f"[red]✗ Erro HTTP {e.code}:[/red] {e.reason}")
+        return None
+    
+    except Exception as e:
+        console.print(f"[red]✗ Erro ao fazer deployment:[/red] {e}")
+        return None
+
+
+def validate_contract_via_api(contract_address: str) -> bool:
+    """
+    Validar se um contrato existe e está deployado na blockchain.
+    
+    Args:
+        contract_address: Endereço do contrato a validar
+    
+    Returns:
+        True se contrato é válido, False caso contrário
+    """
+    try:
+        payload = {"contract_address": contract_address}
+        req = urlrequest.Request(
+            url=f"{BASE_URL}/config/validate-contract",
+            method="POST",
+            data=json.dumps(payload).encode("utf-8"),
+        )
+        req.add_header("Content-Type", "application/json")
+        
+        with urlrequest.urlopen(req) as resp:  # noqa: S310
+            result = json.loads(resp.read().decode("utf-8"))
+            if result.get("success"):
+                console.print(f"[bold green]✓ Contrato Validado:[/bold green] {contract_address}")
+                console.print(f"[dim]Explorer: {result.get('explorer_url')}[/dim]")
+                return True
+            else:
+                console.print(f"[red]✗ Falha na validação[/red]")
+                return False
+    
+    except urlrequest.HTTPError as e:
+        try:
+            error_detail = json.loads(e.read().decode("utf-8"))
+            console.print(f"[red]✗ Erro:[/red] {error_detail.get('detail', str(error_detail))}")
+        except Exception:
+            console.print(f"[red]✗ Erro HTTP {e.code}:[/red] {e.reason}")
+        return False
+    
+    except Exception as e:
+        console.print(f"[red]✗ Erro ao validar:[/red] {e}")
+        return False
+
+
+def read_contract_address_from_env() -> str | None:
+    """
+    Ler CONTRACT_ADDRESS do ficheiro .env local.
+    
+    Returns:
+        Endereço do contrato, ou None se não existir
+    """
+    env_file = Path(__file__).parent / ".env"
+    if env_file.exists():
+        content = env_file.read_text()
+        for line in content.split("\n"):
+            if line.startswith("CONTRACT_ADDRESS="):
+                addr = line.split("=", 1)[1].strip()
+                if addr and addr != "0x0000000000000000000000000000000000000000":
+                    return addr
+    return None
+
+
+def save_contract_address_to_env(address: str) -> None:
+    """
+    Guardar CONTRACT_ADDRESS no ficheiro .env local.
+    
+    Args:
+        address: Endereço do contrato
+    """
+    env_file = Path(__file__).parent / ".env"
+    
+    if env_file.exists():
+        content = env_file.read_text()
+        lines = content.split("\n")
+        
+        found = False
+        for i, line in enumerate(lines):
+            if line.startswith("CONTRACT_ADDRESS="):
+                lines[i] = f"CONTRACT_ADDRESS={address}"
+                found = True
+                break
+        
+        if not found:
+            lines.append(f"CONTRACT_ADDRESS={address}")
+        
+        env_file.write_text("\n".join(lines))
+    else:
+        # Criar novo .env
+        env_file.write_text(f"CONTRACT_ADDRESS={address}\n")
+
+
+def authenticate_manager_with_api(private_key: str) -> bool:
+    """
+    Autenticar o Supply Manager via API.
+    Faz POST a /config/authenticate-manager
+    
+    Args:
+        private_key: Chave privada do Supply Manager
+    
+    Returns:
+        True se autenticação foi bem-sucedida, False caso contrário
+    """
+    try:
+        payload = {"private_key": private_key}
+        req = urlrequest.Request(
+            url=f"{BASE_URL}/config/authenticate-manager",
+            method="POST",
+            data=json.dumps(payload).encode("utf-8"),
+        )
+        req.add_header("Content-Type", "application/json")
+        
+        with urlrequest.urlopen(req) as resp:  # noqa: S310
+            result = json.loads(resp.read().decode("utf-8"))
+            if result.get("success"):
+                console.print(f"[bold green]✓ {result.get('message')}[/bold green]")
+                console.print(f"[dim]Endereço: {result.get('manager_address')}[/dim]")
+                return True
+            else:
+                console.print(f"[red]✗ Falha na autenticação[/red]")
+                return False
+    
+    except urlrequest.HTTPError as e:
+        try:
+            error_detail = json.loads(e.read().decode("utf-8"))
+            console.print(f"[red]✗ Erro:[/red] {error_detail.get('detail', str(error_detail))}")
+        except Exception:
+            console.print(f"[red]✗ Erro HTTP {e.code}:[/red] {e.reason}")
+        return False
+    
+    except Exception as e:
+        console.print(f"[red]✗ Erro ao autenticar:[/red] {e}")
+        return False
+
+
+def initialize_blockchain_setup() -> bool:
+    """
+    Fluxo completo de inicialização:
+    1. Pedir chave privada do Supply Manager e validar
+    2. Autenticar no backend
+    3. Verificar se existe CONTRACT_ADDRESS no .env local
+       - Se existe: validar no backend
+       - Se não existe: fazer deployment de novo contrato
+    4. Guardar endereço do contrato no .env local
+    
+    Returns:
+        True se sucesso, False se falhou
+    """
+    console.print("\n[bold cyan]🔐 Autenticação do Supply Manager[/bold cyan]")
+    console.print(f"[dim]Endereço esperado: {SUPPLY_MANAGER_ADDRESS}[/dim]\n")
+    
+    # ========== PASSO 1: PEDIR E VALIDAR CHAVE PRIVADA ==========
+    max_attempts = 3
+    private_key = None
+    
+    for attempt in range(max_attempts):
+        private_key_input = Prompt.ask(
+            "[bold]Introduza a chave privada do Supply Manager[/bold]",
+            password=True
+        )
+        
+        if not private_key_input:
+            console.print("[red]✗ Chave privada não pode estar vazia[/red]")
+            continue
+        
+        # Garantir prefixo 0x
+        if not private_key_input.startswith("0x"):
+            private_key_input = f"0x{private_key_input}"
+        
+        # Validar localmente se a chave gera o endereço correto
+        try:
+            derived_address = address_from_private_key(private_key_input)
+            if derived_address.lower() != SUPPLY_MANAGER_ADDRESS.lower():
+                console.print(f"[red]✗ Endereço inválido[/red]")
+                console.print(f"[dim]Esperado: {SUPPLY_MANAGER_ADDRESS}[/dim]")
+                console.print(f"[dim]Obtido: {derived_address}[/dim]\n")
+                remaining = max_attempts - attempt - 1
+                if remaining > 0:
+                    console.print(f"[yellow]Tentativas restantes: {remaining}[/yellow]\n")
+                continue
+            
+            private_key = private_key_input
+            console.print(f"[bold green]✓ Chave validada localmente[/bold green]\n")
+            break
+        
+        except Exception as e:
+            console.print(f"[red]✗ Erro ao validar chave:[/red] {e}\n")
+            continue
+    
+    if not private_key:
+        console.print("[red]✗ Falha na validação da chave privada[/red]")
+        return False
+    
+    # ========== PASSO 2: AUTENTICAR NO BACKEND ==========
+    console.print("[bold cyan]🔗 Autenticando no backend...[/bold cyan]\n")
+    if not authenticate_manager_with_api(private_key):
+        console.print("[red]✗ Falha na autenticação no backend[/red]")
+        return False
+    
+    console.print("[bold green]✓ Supply Manager autenticado[/bold green]\n")
+    
+    # ========== PASSO 3: VERIFICAR/CRIAR CONTRATO ==========
+    console.print("[bold cyan]🔗 Verificando Contrato Inteligente...[/bold cyan]\n")
+    
+    # Tentar ler CONTRACT_ADDRESS do .env local
+    local_contract = read_contract_address_from_env()
+    
+    if local_contract:
+        # Contrato existe no .env local, validar no backend
+        console.print(f"[dim]Contrato encontrado no .env local:[/dim] {local_contract}\n")
+        console.print("[dim]Validando contrato na blockchain...[/dim]\n")
+        
+        if validate_contract_via_api(local_contract):
+            # Contrato é válido
+            console.print(f"[bold green]✓ Sistema pronto para operações![/bold green]\n")
+            return True
+        else:
+            # Contrato não é válido, perguntar se quer fazer deploy novo
+            console.print("[yellow]⚠ Contrato não encontrado ou inválido[/yellow]\n")
+            
+            if Confirm.ask("[bold]Deseja fazer deployment de um novo contrato?[/bold]", default=True):
+                console.print("[bold cyan]📦 Fazendo Deployment do Contrato...[/bold cyan]\n")
+                new_contract = deploy_contract_via_api()
+                
+                if new_contract:
+                    save_contract_address_to_env(new_contract)
+                    console.print(f"[bold green]✓ Contrato guardado localmente[/bold green]\n")
+                    console.print("[bold green]✓ Sistema pronto para operações![/bold green]\n")
+                    return True
+                else:
+                    console.print("[red]✗ Falha ao fazer deployment[/red]")
+                    return False
+            else:
+                console.print("[red]✗ Operação cancelada[/red]")
+                return False
+    else:
+        # Contrato não existe no .env local, fazer deployment novo
+        console.print("[dim]Nenhum contrato configurado localmente[/dim]")
+        console.print("[dim]Será criado um novo contrato...[/dim]\n")
+        
+        console.print("[bold cyan]📦 Fazendo Deployment do Contrato...[/bold cyan]\n")
+        
+        new_contract = deploy_contract_via_api()
+        
+        if new_contract:
+            save_contract_address_to_env(new_contract)
+            console.print(f"[bold green]✓ Contrato guardado localmente[/bold green]\n")
+            console.print("[bold green]✓ Sistema pronto para operações![/bold green]\n")
+            return True
+        else:
+            console.print("[red]✗ Falha ao fazer deployment[/red]")
+            return False
+
+
+# ============================================================
+# Utilizadores de teste (endereços conhecidos pelo sistema)
+# ============================================================
+# As chaves privadas são pedidas ao utilizador quando seleciona um personagem
+# O sistema valida se a chave privada gera o endereço esperado
 
 USERS = {
     "1": {
         "name": "Alice (Producer)",
         "id": "alice",
         "role": "PRODUCER",
-        "priv": _env_priv(
-            "ALICE_KEY",
-            "0x00000000000000000000000000000000000000000000000000000000"
-        ),
+        "expected_address": "0x7Ac8041347b40a6F1ee3e9e9f82C1370afdbea50",
+        "priv": None,  # Será preenchido quando o utilizador fornecer a chave
+        "public_key": None,  # Será derivado da chave privada
     },
     "2": {
         "name": "Bob (Transporter)",
         "id": "bob",
         "role": "TRANSPORTER",
-        "priv": _env_priv(
-            "BOB_KEY",
-            "0x11111111111111111111111111111111111111111111111111111111"
-        ),
+        "expected_address": "0x69aF73CF609DdA4112d1e9f1FA337281202457F4",
+        "priv": None,
+        "public_key": None,
+    },
+    "3": {
+        "name": "Charlie (Receiver)",
+        "id": "charlie",
+        "role": "RECEIVER",
+        "expected_address": "0x7832aE65a53e5c359992F6B4320736238b8cb4DE",
+        "priv": None,
+        "public_key": None,
     },
 }
 
 
 ROLE_TO_RECORD_TYPES = {
     "PRODUCER": ["PRODUCED"],
-    "TRANSPORTER": ["TRANSFER", "DELIVERY"],}
+    "TRANSPORTER": ["TRANSFER", "DELIVERY"],
+    "RECEIVER": ["DELIVERY"],
+}
 
 
 RECORD_TYPE_LABELS = {
@@ -88,6 +392,74 @@ RECORD_TYPE_LABELS = {
     "TRANSFER": "Transferência",
     "DELIVERY": "Entrega",
 }
+
+
+# ============================================================
+# Funções de autenticação de utilizadores
+# ============================================================
+
+def request_and_validate_private_key(user: dict) -> bool:
+    """
+    Pede a chave privada do utilizador e valida se corresponde ao endereço esperado.
+    
+    Args:
+        user: Dicionário do utilizador com 'name', 'expected_address', etc.
+    
+    Returns:
+        True se a chave privada foi validada com sucesso, False caso contrário
+    """
+    user_name = user["name"]
+    expected_address = user["expected_address"]
+    max_attempts = 3
+    
+    for attempt in range(max_attempts):
+        console.print(
+            f"\n[bold cyan]🔐 Autenticação: {user_name}[/bold cyan]"
+        )
+        console.print(f"[dim]Endereço esperado: {expected_address}[/dim]")
+        
+        private_key = Prompt.ask(
+            "[bold]Introduza a chave privada[/bold]",
+            password=True
+        )
+        
+        if not private_key:
+            console.print("[red]✗ Chave privada não pode estar vazia[/red]")
+            continue
+        
+        # Garantir prefixo 0x
+        if not private_key.startswith("0x"):
+            private_key = f"0x{private_key}"
+        
+        try:
+            # Validar se a chave corresponde ao endereço esperado
+            derived_address = get_address_from_private_key(private_key)
+            
+            if derived_address.lower() == expected_address.lower():
+                # Guardar a chave privada e derivar a chave pública
+                user["priv"] = private_key
+                user["public_key"] = get_public_key(private_key)
+                
+                console.print(f"[bold green]✓ Autenticação bem-sucedida![/bold green]")
+                console.print(f"[dim]Chave pública: {user['public_key']}[/dim]")
+                return True
+            else:
+                console.print(f"[red]✗ Endereço inválido![/red]")
+                console.print(f"[dim]Esperado: {expected_address}[/dim]")
+                console.print(f"[dim]Obtido: {derived_address}[/dim]")
+                remaining = max_attempts - attempt - 1
+                if remaining > 0:
+                    console.print(f"[yellow]Tentativas restantes: {remaining}[/yellow]")
+        except Exception as e:
+            console.print(f"[red]✗ Erro ao validar chave: {e}[/red]")
+            remaining = max_attempts - attempt - 1
+            if remaining > 0:
+                console.print(f"[yellow]Tentativas restantes: {remaining}[/yellow]")
+    
+    console.print(
+        "[red]✗ Falha na autenticação após múltiplas tentativas[/red]"
+    )
+    return False
 
 
 # ============================================================
@@ -184,8 +556,8 @@ def show_header(current_user: dict | None = None) -> None:
         console.print(f"[dim]Endereço: {address}[/dim]\n")
 
 
-def select_user(default: str = "1") -> str:
-    """Permite selecionar um utilizador."""
+def select_user(default: str = "1") -> str | None:
+    """Permite selecionar um utilizador e autentica-se com a chave privada."""
     console.print("\n[bold cyan]Selecione o Utilizador:[/bold cyan]")
 
     for key, user in USERS.items():
@@ -193,16 +565,14 @@ def select_user(default: str = "1") -> str:
 
     choice = Prompt.ask("Escolha", choices=list(USERS.keys()), default=default)
 
-    # Mostrar endereço do utilizador escolhido imediatamente
     chosen = USERS.get(choice)
-    if chosen:
-        priv = chosen.get("priv")
-        try:
-            addr = get_address_from_private_key(priv)
-            console.print(f"\n[dim]Endereço selecionado:[/dim] {addr}\n")
-        except Exception:
-            # Fallback: não bloquear se houver erro a derivar chave
-            pass
+    if not chosen:
+        console.print("[red]✗ Utilizador inválido[/red]")
+        return None
+
+    # Pedir e validar a chave privada
+    if not request_and_validate_private_key(chosen):
+        return None
 
     return choice
 
@@ -466,7 +836,7 @@ def create_record_interactive_for_role(
 # Verificação
 # ============================================================
 
-def verify_data(base_url: str) -> None:
+def verify_data() -> None:
     """Verifica dados contra o backend obtendo a verificação criptográfica integrada no GET."""
 
     console.print("\n[bold cyan]🔍 Verificar Dados[/bold cyan]")
@@ -488,7 +858,7 @@ def verify_data(base_url: str) -> None:
     item_id = Prompt.ask(f"ID de {item_label}")
 
     # Fazer GET que já inclui verificação criptográfica integrada
-    data = get_json(f"{base_url}/{endpoint_path}/{item_id}")
+    data = get_json(f"{BASE_URL}/{endpoint_path}/{item_id}")
 
     if not data:
         console.print("[red]✗ Não foi possível obter os dados[/red]")
@@ -583,7 +953,7 @@ def verify_data(base_url: str) -> None:
 # Ataque / Tamper
 # ============================================================
 
-def simulate_attack(base_url: str) -> None:
+def simulate_attack() -> None:
     """Simula um ataque alterando dados na base de dados."""
 
     console.print("\n[bold red]⚠️ Simular Ataque / Alteração de Dados[/bold red]")
@@ -613,7 +983,7 @@ def simulate_attack(base_url: str) -> None:
         }
 
         req = urlrequest.Request(
-            url=f"{base_url}/{endpoint}/{item_id}/tamper",
+            url=f"{BASE_URL}/{endpoint}/{item_id}/tamper",
             method="PUT",
             data=json.dumps(body).encode("utf-8"),
         )
@@ -671,8 +1041,12 @@ def build_menu_options(role: str) -> dict[str, tuple[str, str]]:
     return options
 
 
-def run_app(base_url: str, initial_user_id: str) -> None:
+def run_app(initial_user_id: str | None) -> None:
     """Executa a aplicação CLI."""
+
+    if not initial_user_id:
+        console.print("[red]✗ Falha na autenticação inicial[/red]")
+        return
 
     current_user_id = initial_user_id
     last_manifest_id: str | None = None
@@ -681,7 +1055,12 @@ def run_app(base_url: str, initial_user_id: str) -> None:
         user = USERS[current_user_id]
         role = user["role"]
         private_key = user["priv"]
-        public_key = get_public_key(private_key)
+        
+        if not private_key:
+            console.print("[red]✗ Erro: chave privada não autenticada[/red]")
+            return
+        
+        public_key = user["public_key"]
 
         show_header(user)
 
@@ -700,7 +1079,7 @@ def run_app(base_url: str, initial_user_id: str) -> None:
 
         if action == "create_manifest":
             manifest_id, _ = create_manifest_interactive(
-                base_url=base_url,
+                base_url=BASE_URL,
                 private_key=private_key,
                 public_key=public_key,
                 signer_id=user["id"],
@@ -711,7 +1090,7 @@ def run_app(base_url: str, initial_user_id: str) -> None:
 
         elif action == "create_record":
             create_record_interactive_for_role(
-                base_url=base_url,
+                base_url=BASE_URL,
                 private_key=private_key,
                 public_key=public_key,
                 role=role,
@@ -720,14 +1099,16 @@ def run_app(base_url: str, initial_user_id: str) -> None:
             )
 
         elif action == "verify":
-            verify_data(base_url)
+            verify_data()
 
         elif action == "switch_user":
-            current_user_id = select_user(default=current_user_id)
+            new_user_id = select_user(default=current_user_id)
+            if new_user_id:
+                current_user_id = new_user_id
             continue
 
         elif action == "attack":
-            simulate_attack(base_url)
+            simulate_attack()
 
         elif action == "exit":
             console.print("[yellow]Até logo! 👋[/yellow]")
@@ -739,12 +1120,19 @@ def run_app(base_url: str, initial_user_id: str) -> None:
 def main() -> None:
     """Ponto de entrada da aplicação."""
 
-    base_url = "http://127.0.0.1:8000"
+    # Verificar e configurar o blockchain no startup
+    if not initialize_blockchain_setup():
+        console.print("[red]✗ Não foi possível inicializar o blockchain[/red]")
+        sys.exit(1)
 
     user_id = select_user(default="1")
+    
+    if not user_id:
+        console.print("[red]✗ Falha na seleção e autenticação do utilizador[/red]")
+        sys.exit(1)
 
     try:
-        run_app(base_url, user_id)
+        run_app(user_id)
     except KeyboardInterrupt:
         console.print("\n[yellow]Aplicação encerrada pelo utilizador[/yellow]")
         sys.exit(0)

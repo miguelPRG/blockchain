@@ -1,12 +1,13 @@
 """Ponto de entrada FastAPI para rastreabilidade blockchain-only."""
 
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 # Carregar .env no início da aplicação
 try:
     from dotenv import load_dotenv
-    env_file = Path(__file__).parent.parent / ".env"
+    env_file = Path(__file__).parent / ".env"
     load_dotenv(env_file)
 except ImportError:
     pass
@@ -21,14 +22,25 @@ from app.routers.health import router as health_router
 from app.routers.manifests import router as manifests_router
 from app.routers.records import router as records_router
 from app.routers.verification import router as verification_router
+from app.routers.verification_config import router as verification_config_router
 from app.routers.config import router as config_router
 from app.services.blockchain_service import check_connection_status
-from app.services.deploy_service import auto_deploy_if_needed
+
+# ============================================================
+# Constantes
+# ============================================================
+SUPPLY_MANAGER_ADDRESS = "0x9D77a7336C19eE8975Eb6267c2aF384B90C73455"
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    """Inicializar status de conexão blockchain e wallet."""
+    """Inicializar aplicação e recursos."""
     rprint(f"[bold cyan]Iniciando:[/bold cyan] {settings.app_name} v{settings.app_version}")
+    
+    # Verificar SEPOLIA_RPC_URL
+    if not os.getenv("SEPOLIA_RPC_URL"):
+        rprint("[bold red]✗ SEPOLIA_RPC_URL não configurada[/bold red]")
+        raise RuntimeError("SEPOLIA_RPC_URL environment variable is required")
+    
     rprint(f"[bold yellow]Blockchain Status:[/bold yellow] {check_connection_status()}")
     
     # Inicializar DB
@@ -37,25 +49,11 @@ async def lifespan(_: FastAPI):
     
     rprint(f"[bold green]⚡ Modo:[/bold green] Híbrido (SQLite + Blockchain)")
     
-    # Verificar chave privada
-    private_key = settings.manager_key
-    if private_key:
-        try:
-            # Adicionar prefixo 0x se não tiver
-            if not private_key.startswith("0x"):
-                private_key = f"0x{private_key}"
-            
-            account = Account.from_key(private_key)
-            rprint(f"[bold green]✓ Wallet:[/bold green] {account.address}")
-        except Exception as e:
-            rprint(f"[bold red]✗ Erro na chave privada:[/bold red] {e}")
-    else:
-        rprint(f"[bold red]✗ MANAGER_KEY não configurada[/bold red]")
-    
-    # Deploy automático do contrato se necessário
-    auto_deploy_if_needed(verbose=True)
-
+    # Yield para permitir que a aplicação execute
     yield
+    
+    # Cleanup (opcional)
+    rprint(f"[bold yellow]Encerrando aplicação[/bold yellow]")
 
 app = FastAPI(
     title=settings.app_name,
@@ -72,4 +70,5 @@ app.include_router(health_router)
 app.include_router(manifests_router)
 app.include_router(records_router)
 app.include_router(verification_router)
+app.include_router(verification_config_router)
 app.include_router(config_router)

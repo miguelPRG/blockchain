@@ -4,7 +4,7 @@ import json
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from app.core.database import get_db
-from app.core.hashing import sha256_hex
+from shared.hashing import sha256_hex
 from app.models.manifest import Manifest as ManifestModel
 from app.schemas.manifest import ManifestCreateRequest, ManifestResponse
 from app.schemas.verification import VerificationRequest

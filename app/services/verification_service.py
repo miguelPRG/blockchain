@@ -1,7 +1,7 @@
 """Serviço de verificação independente para integridade e não-repúdio."""
 
-from app.core.hashing import sha256_hex
-from app.core.security import verify_signature
+from shared.hashing import sha256_hex
+from shared.security import verify_signature
 from app.schemas.verification import VerificationRequest, VerificationResponse
 from app.services.blockchain_service import decode_anchor_tx
 

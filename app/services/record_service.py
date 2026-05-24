@@ -7,8 +7,8 @@ from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 
-from app.core.hashing import sha256_hex, canonical_json_readable
-from app.core.security import verify_signature, address_from_private_key, get_private_key_from_signer_id
+from shared.hashing import sha256_hex, canonical_json_readable
+from shared.security import verify_signature, address_from_private_key, get_private_key_from_signer_id
 from app.schemas.record import RecordCreateRequest, RecordResponse, RecordType
 from app.models.manifest import Manifest as ManifestModel
 from app.models.record import Record as RecordModel

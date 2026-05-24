@@ -81,7 +81,7 @@ def _migrate_sqlite_payload_storage() -> None:
 
     import json
 
-    from app.core.hashing import sha256_hex
+    from shared.hashing import sha256_hex
     from app.models.manifest import Manifest
     from app.models.record import Record
 
