@@ -12,7 +12,6 @@ try:
 except ImportError:
     pass
 
-from eth_account import Account
 from fastapi import FastAPI
 from rich import print as rprint
 
@@ -26,10 +25,7 @@ from app.routers.verification_config import router as verification_config_router
 from app.routers.config import router as config_router
 from app.services.blockchain_service import check_connection_status
 
-# ============================================================
-# Constantes
-# ============================================================
-SUPPLY_MANAGER_ADDRESS = "0x9D77a7336C19eE8975Eb6267c2aF384B90C73455"
+
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):

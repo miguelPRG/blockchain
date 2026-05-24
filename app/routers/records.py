@@ -1,10 +1,11 @@
 """Endpoints de registo."""
 
+from pydantic import BaseModel
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.core.hashing import sha256_hex
+from shared.hashing import sha256_hex
 from app.models.record import Record as RecordModel
 from app.schemas.record import RecordCreateRequest, RecordResponse
 from app.schemas.verification import VerificationRequest
@@ -74,7 +75,6 @@ async def get_record_by_id(record_id: str, db: Session = Depends(get_db)):
         "verification": verification.model_dump(),
     }
 
-from pydantic import BaseModel
 
 class TamperRequest(BaseModel):
     new_quantity: float

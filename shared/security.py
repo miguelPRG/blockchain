@@ -116,44 +116,4 @@ def get_private_key_from_signer_id(signer_id: str | None) -> str | None:
     return priv if priv.startswith("0x") else f"0x{priv}"
 
 
-def get_private_key_from_public(public_key_hex: str) -> str | None:
-    """Tenta encontrar uma chave privada (do ambiente) correspondente a uma chave pública.
 
-    Procura por variáveis de ambiente comuns usadas na CLI de teste: `ALICE_KEY`, `BOB_KEY`, `CHARLIE_KEY`.
-    Retorna a chave privada com prefixo `0x` quando encontrada, ou `None`.
-    """
-    logger = logging.getLogger(__name__)
-
-    if not public_key_hex:
-        logger.warning("[get_private_key_from_public] Public key is empty")
-        return None
-
-    clean_target = public_key_hex[2:] if public_key_hex.startswith("0x") else public_key_hex
-    # Normalize to lower-case for comparison
-    clean_target = clean_target.lower()
-    logger.info(f"[get_private_key_from_public] Looking for: {clean_target[:16]}...")
-
-    candidates = [
-        ("ALICE_KEY", os.getenv("ALICE_KEY")),
-        ("BOB_KEY", os.getenv("BOB_KEY")),
-        ("CHARLIE_KEY", os.getenv("CHARLIE_KEY")),
-    ]
-
-    for env_name, priv in candidates:
-        if not priv:
-            logger.debug(f"[get_private_key_from_public] {env_name} not set")
-            continue
-        clean_priv = priv[2:] if priv.startswith("0x") else priv
-        try:
-            pub = get_public_key_from_private(clean_priv)
-            clean_pub = pub.lower()
-            logger.debug(f"[get_private_key_from_public] {env_name}: pub={clean_pub[:16]}...")
-            if clean_pub == clean_target:
-                logger.info(f"[get_private_key_from_public] ✓ FOUND: {env_name}")
-                return priv if priv.startswith("0x") else f"0x{priv}"
-        except Exception as e:
-            logger.error(f"[get_private_key_from_public] {env_name} error: {e}")
-            continue
-
-    logger.warning(f"[get_private_key_from_public] NO MATCH found for public key {clean_target[:16]}...")
-    return None

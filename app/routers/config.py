@@ -1,6 +1,5 @@
 """Endpoints para configuração dinâmica da aplicação."""
 import os
-from pathlib import Path
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 

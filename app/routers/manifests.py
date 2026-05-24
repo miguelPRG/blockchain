@@ -1,6 +1,7 @@
 """Endpoints de manifesto."""
 
 import json
+from pydantic import BaseModel
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from app.core.database import get_db
@@ -73,7 +74,6 @@ async def create_manifest_endpoint(request: ManifestCreateRequest, db: Session =
     """Criar manifesto assinado."""
     return create_manifest(db, request)
 
-from pydantic import BaseModel
 
 class TamperRequest(BaseModel):
     new_quantity: float

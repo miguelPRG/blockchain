@@ -23,21 +23,6 @@ ROLE_ALLOWED_RECORD_TYPES = {
 }
 
 
-def _available_stock(db: Session, manifest_id: str) -> float:
-    records = db.query(RecordModel).filter(RecordModel.manifest_id == manifest_id).all()
-    incoming = sum(
-        record.quantity
-        for record in records
-        if record.record_type in {RecordType.PRODUCED.value, RecordType.RECEIVED.value}
-    )
-    outgoing = sum(
-        record.quantity
-        for record in records
-        if record.record_type in {RecordType.TRANSFER.value, RecordType.DELIVERY.value}
-    )
-    return float(incoming - outgoing)
-
-
 def create_record(db: Session, request: RecordCreateRequest) -> RecordResponse:
     """
     Criar registo no repositório local com validação de quantidades.

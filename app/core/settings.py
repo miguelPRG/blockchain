@@ -20,15 +20,5 @@ class Settings(BaseSettings):
         extra="ignore"
     )
 
-    def reload_contract_address(self) -> None:
-        """Recarregar contract_address do arquivo .env em tempo de execução."""
-        env_file = Path(__file__).parent.parent.parent / ".env"
-        if env_file.exists():
-            content = env_file.read_text()
-            for line in content.split("\n"):
-                if line.startswith("CONTRACT_ADDRESS="):
-                    self.contract_address = line.split("=", 1)[1].strip()
-                    break
-
 
 settings = Settings()
