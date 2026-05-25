@@ -16,6 +16,10 @@ class ManifestPayload(BaseModel):
     ingredients: list[str] = Field(..., description="Lista de ingredientes para rastreabilidade.")
     origin: str = Field(..., description="Local de origem (cervejaria/fazenda).")
     sustainability: str = Field(..., description='Carimbo de sustentabilidade, ex. "Responsible Barley".')
+    owner_user_id: str | None = Field(default=None, description="User responsável pelo manifesto derivado.")
+    root_manifest_id: str | None = Field(default=None, description="Manifesto original/root da cadeia de derivação.")
+    parent_manifest_id: str | None = Field(default=None, description="Manifesto anterior de onde este deriva.")
+    source_record_id: str | None = Field(default=None, description="Registo TRANSFER que originou esta nova versão.")
     timestamp: str = Field(..., description="Timestamp ISO (2026-05-12T14:50:38.566021+00:00) da emissão de manifesto.")
 
 

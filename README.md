@@ -1,164 +1,125 @@
-# 🍺 Blockchain Supply Chain System
+# Esboco do Relatorio
 
-Sistema híbrido de blockchain para rastreabilidade de cerveja artesanal com FastAPI backend e clientes CLI isolados.
+## Sistema Implementado
 
-## 🎯 Arquitetura
+Este projeto implementa um sistema hibrido de rastreabilidade de cadeia de fornecimento com dados operacionais guardados off-chain e provas de integridade ancoradas na blockchain Sepolia.
 
-Projeto estruturado em **dois projetos uv independentes**:
+O sistema segue quatro componentes principais:
 
-```
-blockchain/
-├── app/                    ← Backend FastAPI (servidor)
-│   ├── pyproject.toml
-│   ├── core/
-│   ├── services/
-│   ├── routers/
-│   ├── contracts/          ← Smart contracts Solidity
-│   └── main.py
-│
-├── client/                 ← Clientes (isolados via HTTP)
-│   ├── pyproject.toml
-│   ├── cli_user.py         ← Interface CLI
-│   └── verify_blockchain.py ← Verificação de blockchain
-│
-└── pyproject.toml          ← Workspace root
-```
+- Users: Alice, Bob e Charlie, cada um com uma wallet Ethereum e uma chave privada usada para assinar operacoes.
+- Supply Chain Manager: backend FastAPI que valida pedidos, assinaturas, quantidades e transacoes blockchain.
+- Repository: base de dados SQLite onde ficam guardados manifestos, records, assinaturas, hashes e referencias para transacoes.
+- Blockchain: contrato inteligente `Anchor.sol`, usado apenas para guardar hashes criptograficos dos manifestos e records.
 
-## 🔐 Separação de Segurança
+## Roles e Operacoes
 
-- **Backend** (`app/`): Centraliza toda lógica, smart contracts e validação
-- **Clientes** (`client/`): Comunicam **APENAS via HTTP**, sem acesso ao código backend
-- **Sem violações**: Clientes não importam módulos do backend
+Foram definidos tres utilizadores:
 
-## 🚀 Quick Start
+- Alice: producer. Cria manifestos e records `PRODUCED`.
+- Bob: transporter. Cria records `TRANSFER`.
+- Charlie: receiver. Cria records `RECEIVED`, usados como certificacao final de rececao.
 
-### Backend
+Todos os utilizadores podem verificar manifestos e records especificos.
 
-```bash
-cd app/
-uv sync
-uv run fastapi dev main.py
-```
+## Fluxo Principal
 
-API disponível em `http://127.0.0.1:8000`
+1. Alice cria um manifesto de bens com tipo, quantidade, origem, ingredientes, timestamp e outros metadados.
+2. O manifesto e assinado por Alice e pelo Supply Chain Manager.
+3. O hash canonico do manifesto e ancorado na blockchain.
+4. Opcionalmente, e criado um record `PRODUCED` associado ao manifesto.
+5. Bob cria um record `TRANSFER`, indicando a quantidade transferida.
+6. O sistema valida se existe quantidade disponivel no repositorio.
+7. O record `TRANSFER` e assinado por Bob e pelo Supply Chain Manager, guardado off-chain e ancorado na blockchain.
+8. Depois da transferencia, e criado um novo manifesto derivado para Bob, com a quantidade restante.
+9. Charlie confirma a rececao atraves de um record `RECEIVED`, referenciando o record `TRANSFER` de Bob.
+10. O record `RECEIVED` e assinado por Charlie e pelo Supply Chain Manager, guardado off-chain e ancorado na blockchain.
 
-### Client
+## Assinaturas e Autenticacao
 
-Em outro terminal:
+Cada manifesto ou record usa um envelope de assinatura comum:
 
-```bash
-cd client/
-uv sync
-uv run python cli_user.py
-```
+- `payload`: dados funcionais do manifesto ou record.
+- `auth.public_key`: chave publica do user.
+- `auth.signature`: assinatura do user sobre o hash do payload.
+- `auth.manager_public_key`: chave publica do Supply Chain Manager.
+- `auth.manager_signature`: assinatura do manager sobre o mesmo hash.
+- `signed_anchor_tx`: transacao blockchain assinada localmente pelo user.
 
-## 📦 Dependências
+As chaves privadas nunca sao enviadas ao backend. O CLI assina localmente o payload e a transacao blockchain. O backend recebe apenas chaves publicas, assinaturas e transacoes ja assinadas.
 
-### App (Backend)
-- FastAPI 0.136.1
-- Web3 7.16.0
-- Pydantic Settings 2.14.1
-- SQLAlchemy 2.0+
-- ECDSA 0.19.2
-- Rich 15.0.0
-- py-solc-x ≤2.0.5
+## Integridade e Blockchain
 
-### Client (Clientes)
-- Rich 15.0.0
-- (Comunica via HTTP - sem dependências de blockchain)
+O sistema calcula um hash SHA-256 sobre uma representacao JSON canonica de cada manifesto ou record. Esse hash e:
 
-## 📋 Project Structure
+- usado para validar as assinaturas digitais;
+- guardado no repositorio;
+- enviado para o contrato inteligente `Anchor.sol`;
+- verificado novamente quando o dado e consultado.
 
-- `app/` - Backend FastAPI (servidor centralizado)
-  - `core/` - Utilities: database, hashing, security, settings
-  - `crud/` - Database operations
-  - `models/` - SQLAlchemy models
-  - `routers/` - API endpoints
-  - `schemas/` - Pydantic schemas
-  - `services/` - Business logic
-  - `contracts/` - Smart contracts Solidity
-- `client/` - Clientes isolados
-  - `cli_user.py` - Terminal UI para múltiplos usuários
-  - `verify_blockchain.py` - Verificação de transações
+Na blockchain fica apenas o hash, o timestamp e o identificador do item. Os dados completos permanecem off-chain.
 
-## 🔗 API Endpoints
+## Verificacao
 
-```
-/config/
-  GET    /status              - Status da configuração
-  POST   /authenticate-manager - Autenticar Supply Manager
-  GET    /contract-address    - Endereço do contrato
-  POST   /contract-address    - Atualizar endereço
+A verificacao de um manifesto ou record especifico inclui:
 
-/verification/
-  GET    /contract/{address}  - Verificar contrato na blockchain
-  GET    /transaction/{hash}  - Dados da transação
-  GET    /contract-status     - Status completo com Etherscan
+- recomputar o hash do payload guardado no repositorio;
+- comparar o hash recomputado com o hash guardado;
+- verificar a assinatura do user;
+- verificar a assinatura do Supply Chain Manager;
+- obter e decodificar a transacao blockchain;
+- confirmar que o hash ancorado na blockchain corresponde ao payload;
+- confirmar que o item ID da transacao corresponde ao manifesto ou record.
 
-/manifests/
-  POST   /                    - Criar manifesto
-  GET    /{id}                - Obter manifesto
-  GET    /{id}/verify         - Verificar manifesto
+Se algum campo for alterado diretamente na base de dados, a recomputacao do hash deixa de coincidir com a assinatura e com a prova blockchain. Assim, discrepancias tornam-se detetaveis.
 
-/records/
-  POST   /                    - Criar registro
-  GET    /{id}                - Obter registro
-  GET    /{id}/verify         - Verificar registro
+## Consistencia de Quantidades
 
-/health/
-  GET    /status              - Status da API
+O backend rejeita operacoes que excedam a quantidade disponivel.
+
+Na transferencia, Bob apenas pode transferir uma quantidade menor ou igual a quantidade disponivel no manifesto. Na rececao, Charlie nao escolhe manualmente a quantidade: o CLI obtem o record `TRANSFER` de Bob e preenche automaticamente o `manifest_id` e a quantidade recebida.
+
+Isto reduz erros manuais e garante que o record `RECEIVED` certifica exatamente a transferencia criada por Bob.
+
+## Configuracao
+
+As wallets sao configuradas por ficheiros `.env`.
+
+No backend:
+
+```env
+SEPOLIA_RPC_URL=...
+SUPPLY_MANAGER_ADDRESS=0x...
 ```
 
-## 👥 Usuários de Teste
+No cliente:
 
-- **Alice (Producer)**: `0x7Ac8041347b40a6F1ee3e9e9f82C1370afdbea50`
-- **Bob (Transporter)**: `0x69aF73CF609DdA4112d1e9f1FA337281202457F4`
-- **Charlie (Receiver)**: `0x7832aE65a53e5c359992F6B4320736238b8cb4DE`
-- **Supply Manager**: `0x9D77a7336C19eE8975Eb6267c2aF384B90C73455`
-
-## 🔧 Configuração
-
-### .env
-
-```
-SEPOLIA_RPC_URL=https://sepolia.infura.io/v3/YOUR_KEY
-CONTRACT_ADDRESS=0x...           # Opcional - auto-configurable
-MANAGER_KEY=0x...                # Opcional - auth em runtime
+```env
+ALICE_ADDRESS=0x...
+BOB_ADDRESS=0x...
+CHARLIE_ADDRESS=0x...
+SUPPLY_MANAGER_ADDRESS=0x...
+CONTRACT_ADDRESS=0x...
 ```
 
-## 📖 Documentação
+O backend nao precisa das wallets de Alice, Bob ou Charlie. O cliente usa esses enderecos para validar se a private key introduzida corresponde ao personagem escolhido. O backend precisa do endereco publico do Supply Chain Manager para validar que a assinatura do manager pertence a entidade correta.
 
-- [Backend API](app/README.md)
-- [Client CLI](client/README.md)
+## Evidencias a Anexar
 
-## 🧪 Testes
+Para a entrega, devem ser anexadas evidencias concretas:
 
-```bash
-# Criar manifesto
-python client/cli_user.py
+- screenshot ou log da criacao de um manifesto;
+- screenshot ou log de um record `PRODUCED`;
+- screenshot ou log de um record `TRANSFER`;
+- screenshot ou log de um record `RECEIVED`;
+- hashes dos payloads;
+- assinaturas do user e do manager;
+- hashes das transacoes Sepolia;
+- links Etherscan das transacoes;
+- exemplo de verificacao valida;
+- exemplo de tampering na base de dados e verificacao invalida.
 
-# Verificar transação
-python client/verify_blockchain.py 0xTX_HASH
+## Decisoes de Implementacao
 
-# Simular ataque (verificar detecção)
-# Usar opção no CLI
-```
+O sistema trata `RECEIVED` como certificacao final de entrega. Esta decisao mantem o fluxo simples e verificavel: Charlie, enquanto destinatario, assina a confirmacao de rececao, que inclui referencia para a transferencia de Bob, quantidade recebida, timestamp, assinaturas e prova blockchain.
 
-## 📄 License
-
-MIT
-
-## 👨‍💻 Development
-
-Workspace uv com dois projetos independentes:
-
-```bash
-# Sincronizar ambos os projetos
-uv sync
-
-# Apenas backend
-cd app && uv sync
-
-# Apenas client
-cd client && uv sync
-```
+O Supply Chain Manager nao e considerado confiavel. Por isso, a validade do sistema nao depende apenas da base de dados ou do backend. Qualquer parte pode recomputar hashes, verificar assinaturas e comparar os dados com a blockchain.

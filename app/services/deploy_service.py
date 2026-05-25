@@ -293,6 +293,66 @@ def deploy_contract(compiled: dict, manager_key: str) -> str:
         raise
 
 
+def build_deploy_transaction(from_address: str) -> dict:
+    """Construir a transação de deployment sem receber chave privada."""
+    if not settings.sepolia_rpc_url:
+        raise ValueError("SEPOLIA_RPC_URL não configurada")
+    if not from_address or not from_address.startswith("0x"):
+        raise ValueError("Endereço do deployer inválido")
+
+    w3 = Web3(Web3.HTTPProvider(settings.sepolia_rpc_url))
+    if not w3.is_connected():
+        raise ConnectionError("Não consegui conectar a Sepolia")
+
+    project_root = Path(__file__).parent.parent
+    solidity_file = project_root / "contracts" / "Anchor.sol"
+    compiled = compile_contract(solidity_file)
+
+    contract_data = compiled["contracts"]["Anchor.sol"]["Anchor"]
+    abi = contract_data["abi"]
+    bytecode = contract_data["evm"]["bytecode"]["object"]
+
+    checksum_from = Web3.to_checksum_address(from_address)
+    contract = w3.eth.contract(abi=abi, bytecode=bytecode)
+    latest_block = w3.eth.get_block("latest")
+    base_fee = latest_block.get("baseFeePerGas") or w3.eth.gas_price
+    priority_fee = w3.eth.max_priority_fee if hasattr(w3.eth, "max_priority_fee") else w3.to_wei(2, "gwei")
+
+    tx_base = {
+        "from": checksum_from,
+        "nonce": w3.eth.get_transaction_count(checksum_from, "pending"),
+        "chainId": w3.eth.chain_id,
+        "maxPriorityFeePerGas": int(priority_fee),
+        "maxFeePerGas": int(base_fee * 2 + priority_fee),
+        "type": 2,
+    }
+
+    gas_estimate_tx = contract.constructor().build_transaction(tx_base)
+    gas_limit = int(w3.eth.estimate_gas(gas_estimate_tx) * 1.15)
+    return contract.constructor().build_transaction({**tx_base, "gas": gas_limit})
+
+
+def broadcast_signed_deploy_transaction(signed_transaction: str) -> str:
+    """Publicar transação de deployment assinada localmente e devolver o contrato."""
+    if not settings.sepolia_rpc_url:
+        raise ValueError("SEPOLIA_RPC_URL não configurada")
+
+    w3 = Web3(Web3.HTTPProvider(settings.sepolia_rpc_url))
+    if not w3.is_connected():
+        raise ConnectionError("Não consegui conectar a Sepolia")
+
+    raw_tx = signed_transaction[2:] if signed_transaction.startswith("0x") else signed_transaction
+    tx_hash = w3.eth.send_raw_transaction(bytes.fromhex(raw_tx))
+    receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=300)
+
+    if receipt["status"] != 1:
+        raise Exception("Transação de deployment falhou")
+    if not receipt["contractAddress"]:
+        raise Exception("Receipt não contém endereço do contrato")
+
+    return receipt["contractAddress"]
+
+
 def diagnose_account(manager_key: str | None = None) -> dict:
     """Diagnosticar estado da conta e rede."""
     result = {

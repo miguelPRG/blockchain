@@ -16,15 +16,21 @@ router = APIRouter(prefix="/records", tags=["Records"])
 
 
 def _record_payload(record: RecordModel) -> dict:
-    return {
+    payload = {
         "record_id": record.record_id,
         "record_type": record.record_type,
         "manifest_id": record.manifest_id,
         "quantity": record.quantity,
-        "unit": record.unit,
         "timestamp": record.timestamp,
         "notes": record.notes,
     }
+    if record.sender_user_id is not None:
+        payload["sender_user_id"] = record.sender_user_id
+    if record.receiver_user_id is not None:
+        payload["receiver_user_id"] = record.receiver_user_id
+    if record.related_record_id is not None:
+        payload["related_record_id"] = record.related_record_id
+    return payload
 
 
 def _record_response(record: RecordModel) -> dict:
@@ -82,6 +88,40 @@ async def get_latest_record(db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Nenhum registro encontrado")
 
     return _record_response(record)
+
+
+@router.get(
+    "/pending-transfers",
+    summary="Listar TRANSFERs ainda sem RECEIVED associado",
+    description="Devolve transferências Bob -> Charlie que ainda não foram confirmadas por um registo RECEIVED.",
+    response_model=dict,
+)
+async def get_pending_transfers(db: Session = Depends(get_db)):
+    received_transfer_ids = (
+        db.query(RecordModel.related_record_id)
+        .filter(
+            RecordModel.record_type == "RECEIVED",
+            RecordModel.related_record_id.isnot(None),
+        )
+        .subquery()
+    )
+
+    transfers = (
+        db.query(RecordModel)
+        .filter(
+            RecordModel.record_type == "TRANSFER",
+            RecordModel.sender_user_id == "bob",
+            RecordModel.receiver_user_id == "charlie",
+            ~RecordModel.record_id.in_(received_transfer_ids),
+        )
+        .order_by(RecordModel.created_at.asc())
+        .all()
+    )
+
+    return {
+        "count": len(transfers),
+        "transfers": [_record_response(record) for record in transfers],
+    }
 
 
 @router.get(

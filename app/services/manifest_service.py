@@ -13,10 +13,21 @@ from shared.security import (
 )
 from app.schemas.manifest import ManifestCreateRequest, ManifestResponse
 from app.models.manifest import Manifest as ManifestModel
+from app.models.record import Record as RecordModel
+from app.schemas.record import RecordType
 from app.services.blockchain_service import broadcast_signed_anchor_transaction, decode_anchor_tx
 from app.services.signature_service import validate_dual_signature
 
 logger = logging.getLogger(__name__)
+
+
+def manifest_payload_for_hash(payload) -> dict:
+    """Canonical manifest payload; optional lineage is included only when present."""
+    payload_dict = payload.model_dump(mode="json")
+    for optional_field in ("owner_user_id", "root_manifest_id", "parent_manifest_id", "source_record_id"):
+        if payload_dict.get(optional_field) is None:
+            payload_dict.pop(optional_field, None)
+    return payload_dict
 
 
 def create_manifest(db: Session, request: ManifestCreateRequest) -> ManifestResponse:
@@ -32,11 +43,63 @@ def create_manifest(db: Session, request: ManifestCreateRequest) -> ManifestResp
     payload = request.payload
     creator_address = ethereum_address_from_public_key(request.auth.public_key)
 
-    if request.role != "PRODUCER":
+    if request.role not in {"PRODUCER", "TRANSPORTER"}:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Manifest creation requires PRODUCER role.",
+            detail="Manifest creation requires PRODUCER role, or TRANSPORTER for transfer-derived manifests.",
         )
+
+    if request.role == "TRANSPORTER":
+        if (
+            payload.owner_user_id != "bob"
+            or not payload.root_manifest_id
+            or not payload.parent_manifest_id
+            or not payload.source_record_id
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Transfer-derived manifests must set owner_user_id=bob, root_manifest_id, parent_manifest_id and source_record_id.",
+            )
+
+        parent_manifest = (
+            db.query(ManifestModel)
+            .filter(ManifestModel.manifest_id == payload.parent_manifest_id)
+            .first()
+        )
+        transfer = (
+            db.query(RecordModel)
+            .filter(RecordModel.record_id == payload.source_record_id)
+            .first()
+        )
+        if (
+            not parent_manifest
+            or not transfer
+            or transfer.record_type != RecordType.TRANSFER.value
+            or transfer.manifest_id != payload.parent_manifest_id
+            or transfer.sender_user_id != "bob"
+            or transfer.receiver_user_id != "charlie"
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Transfer-derived manifest does not match a valid Bob -> Charlie TRANSFER.",
+            )
+
+        expected_root_manifest_id = parent_manifest.root_manifest_id or parent_manifest.manifest_id
+        if payload.root_manifest_id != expected_root_manifest_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"root_manifest_id must be the original root manifest ID '{expected_root_manifest_id}'.",
+            )
+
+        expected_quantity = parent_manifest.quantity - transfer.quantity
+        if abs(payload.quantity - expected_quantity) > 1e-9:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Derived manifest quantity must be parent quantity minus transferred quantity "
+                    f"({expected_quantity} {payload.unit})."
+                ),
+            )
 
     # Verificar se manifesto já existe no repositório local
     existing = db.query(ManifestModel).filter(ManifestModel.manifest_id == payload.manifest_id).first()
@@ -47,7 +110,7 @@ def create_manifest(db: Session, request: ManifestCreateRequest) -> ManifestResp
         )
 
     # Calcular hash do payload
-    payload_dict = payload.model_dump(mode='json')
+    payload_dict = manifest_payload_for_hash(payload)
     canonical_readable = canonical_json_readable(payload_dict)
     sys.stderr.write(f"\n[API] CANONICAL JSON:\n{canonical_readable}\n")
     sys.stderr.flush()
@@ -107,6 +170,10 @@ def create_manifest(db: Session, request: ManifestCreateRequest) -> ManifestResp
         ingredients_json=json.dumps(payload.ingredients),
         origin=payload.origin,
         sustainability=payload.sustainability,
+        owner_user_id=payload.owner_user_id,
+        root_manifest_id=payload.root_manifest_id,
+        parent_manifest_id=payload.parent_manifest_id,
+        source_record_id=payload.source_record_id,
         creator=creator_address,
         timestamp=payload.timestamp,
         payload_hash=payload_hash,

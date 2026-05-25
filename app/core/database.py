@@ -98,6 +98,10 @@ def _migrate_sqlite_payload_storage() -> None:
                 "ingredients_json",
                 "origin",
                 "sustainability",
+                "owner_user_id",
+                "root_manifest_id",
+                "parent_manifest_id",
+                "source_record_id",
                 "creator",
                 "timestamp",
                 "payload_hash",
@@ -114,7 +118,9 @@ def _migrate_sqlite_payload_storage() -> None:
                 "record_type",
                 "manifest_id",
                 "quantity",
-                "unit",
+                "sender_user_id",
+                "receiver_user_id",
+                "related_record_id",
                 "user",
                 "timestamp",
                 "notes",
@@ -128,7 +134,10 @@ def _migrate_sqlite_payload_storage() -> None:
                 "created_at",
             },
         }
-        obsolete_columns = {"payload_json"}
+        obsolete_columns = {
+            "manifests": {"payload_json"},
+            "records": {"payload_json", "unit"},
+        }
 
         tables = ("manifests", "records")
         needs_migration = {}
@@ -138,7 +147,7 @@ def _migrate_sqlite_payload_storage() -> None:
                 bool(columns)
                 and (
                     not desired_columns[table].issubset(columns)
-                    or bool(columns & obsolete_columns)
+                    or bool(columns & obsolete_columns[table])
                     or _sqlite_column_types(conn, table).get("timestamp") != "VARCHAR(64)"
                 )
             )
@@ -162,12 +171,16 @@ def _migrate_sqlite_payload_storage() -> None:
             "ix_manifests_payload_hash",
             "ix_manifests_tx_hash",
             "ix_manifests_creator",
+            "ix_manifests_root_manifest_id",
+            "ix_manifests_parent_manifest_id",
+            "ix_manifests_source_record_id",
             "ix_records_record_id",
             "ix_records_record_type",
             "ix_records_manifest_id",
             "ix_records_payload_hash",
             "ix_records_tx_hash",
             "ix_records_user",
+            "ix_records_related_record_id",
         ):
             conn.exec_driver_sql(f'DROP INDEX IF EXISTS "{index_name}"')
 
@@ -187,9 +200,16 @@ def _migrate_sqlite_payload_storage() -> None:
                     "ingredients": json.loads(row["ingredients_json"]),
                     "origin": row["origin"],
                     "sustainability": row["sustainability"],
-                    "creator": creator,
                     "timestamp": timestamp,
                 }
+                if "owner_user_id" in row_keys and row["owner_user_id"] is not None:
+                    payload["owner_user_id"] = row["owner_user_id"]
+                if "root_manifest_id" in row_keys and row["root_manifest_id"] is not None:
+                    payload["root_manifest_id"] = row["root_manifest_id"]
+                if "parent_manifest_id" in row_keys and row["parent_manifest_id"] is not None:
+                    payload["parent_manifest_id"] = row["parent_manifest_id"]
+                if "source_record_id" in row_keys and row["source_record_id"] is not None:
+                    payload["source_record_id"] = row["source_record_id"]
                 conn.execute(
                     Manifest.__table__.insert().values(
                         manifest_id=row["manifest_id"],
@@ -199,6 +219,10 @@ def _migrate_sqlite_payload_storage() -> None:
                         ingredients_json=row["ingredients_json"],
                         origin=row["origin"],
                         sustainability=row["sustainability"],
+                        owner_user_id=row["owner_user_id"] if "owner_user_id" in row_keys else None,
+                        root_manifest_id=row["root_manifest_id"] if "root_manifest_id" in row_keys else None,
+                        parent_manifest_id=row["parent_manifest_id"] if "parent_manifest_id" in row_keys else None,
+                        source_record_id=row["source_record_id"] if "source_record_id" in row_keys else None,
                         creator=creator,
                         timestamp=timestamp,
                         payload_hash=row["payload_hash"] if "payload_hash" in row_keys else sha256_hex(payload),
@@ -224,18 +248,24 @@ def _migrate_sqlite_payload_storage() -> None:
                     "record_type": row["record_type"],
                     "manifest_id": row["manifest_id"],
                     "quantity": row["quantity"],
-                    "unit": row["unit"],
-                    "user": user,
                     "timestamp": timestamp,
                     "notes": row["notes"],
                 }
+                if row_keys >= {"sender_user_id"} and row["sender_user_id"] is not None:
+                    payload["sender_user_id"] = row["sender_user_id"]
+                if row_keys >= {"receiver_user_id"} and row["receiver_user_id"] is not None:
+                    payload["receiver_user_id"] = row["receiver_user_id"]
+                if row_keys >= {"related_record_id"} and row["related_record_id"] is not None:
+                    payload["related_record_id"] = row["related_record_id"]
                 conn.execute(
                     Record.__table__.insert().values(
                         record_id=row["record_id"],
                         record_type=row["record_type"],
                         manifest_id=row["manifest_id"],
                         quantity=row["quantity"],
-                        unit=row["unit"],
+                        sender_user_id=row["sender_user_id"] if "sender_user_id" in row_keys else None,
+                        receiver_user_id=row["receiver_user_id"] if "receiver_user_id" in row_keys else None,
+                        related_record_id=row["related_record_id"] if "related_record_id" in row_keys else None,
                         user=user,
                         timestamp=timestamp,
                         notes=row["notes"],

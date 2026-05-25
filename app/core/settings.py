@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     database_url: str = f"sqlite:///{BACKEND_DIR / 'supply_chain.db'}"
     sepolia_rpc_url: str = Field(..., alias="SEPOLIA_RPC_URL")
     manager_key: str | None = Field(default=None, alias="MANAGER_KEY")
+    supply_manager_address: str = Field(..., alias="SUPPLY_MANAGER_ADDRESS")
 
     model_config = SettingsConfigDict(
         env_file=str(Path(__file__).parent.parent / ".env"),

@@ -7,8 +7,9 @@ from shared.security import (
     ethereum_address_from_public_key,
     verify_signature,
 )
+from app.core.settings import settings
 
-SUPPLY_MANAGER_ADDRESS = "0x9D77a7336C19eE8975Eb6267c2aF384B90C73455"
+SUPPLY_MANAGER_ADDRESS = settings.supply_manager_address
 
 
 def validate_dual_signature(

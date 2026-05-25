@@ -14,7 +14,6 @@ class RecordType(str, Enum):
     PRODUCED = "PRODUCED"
     TRANSFER = "TRANSFER"
     RECEIVED = "RECEIVED"
-    DELIVERY = "DELIVERY"
 
 
 class RecordPayload(BaseModel):
@@ -24,7 +23,9 @@ class RecordPayload(BaseModel):
     record_type: RecordType
     manifest_id: str = Field(..., description="ID do manifesto (deve existir na blockchain).")
     quantity: float = Field(..., gt=0)
-    unit: str
+    sender_user_id: str | None = Field(default=None, description="User que envia/transfere os bens.")
+    receiver_user_id: str | None = Field(default=None, description="User que recebe os bens.")
+    related_record_id: str | None = Field(default=None, description="Registo anterior relacionado, por exemplo a TRANSFER recebida.")
     timestamp: str = Field(..., description="Timestamp ISO (2026-05-12T14:50:38.566021+00:00).")
     notes: str | None = Field(default=None, description="Notas operacionais opcionais.")
 

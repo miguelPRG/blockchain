@@ -20,6 +20,61 @@ from rich.table import Table
 BASE_URL = "http://127.0.0.1:8000"
 
 
+def get_api_json(path: str, *, verbose: bool = False) -> dict | None:
+    """Obter JSON da API com o mesmo tratamento usado pelo verificador."""
+    if not path.startswith("/"):
+        path = f"/{path}"
+
+    try:
+        if verbose:
+            rprint(f"\n[dim]Consultando API: {path}[/dim]")
+
+        req = urlrequest.Request(
+            url=f"{BASE_URL}{path}",
+            method="GET",
+        )
+
+        with urlrequest.urlopen(req) as resp:  # noqa: S310
+            data = json.loads(resp.read().decode("utf-8"))
+
+        if data.get("error"):
+            if verbose:
+                rprint(f"[red]✗ Erro da API: {data.get('error')}[/red]")
+            return None
+
+        return data
+
+    except urlrequest.HTTPError as e:
+        if verbose:
+            try:
+                error_data = json.loads(e.read().decode("utf-8"))
+                rprint(f"[red]✗ Erro HTTP {e.code}:[/red] {error_data.get('detail', str(error_data))}")
+            except Exception:
+                rprint(f"[red]✗ Erro HTTP {e.code}:[/red] {e.reason}")
+        return None
+
+    except Exception as e:
+        if verbose:
+            rprint(f"[red]✗ Erro ao consultar API:[/red] {e}")
+        return None
+
+
+def get_verified_resource_status(resource: str, item_id: str) -> tuple[bool, dict | None, str]:
+    """Verificar um manifesto/registo através do GET integrado da API."""
+    data = get_api_json(f"/{resource}/{item_id}")
+    if not data:
+        return False, None, f"{resource.rstrip('s').capitalize()} '{item_id}' não encontrado ou indisponível."
+
+    verification = data.get("verification")
+    if not verification:
+        return False, data, "Resposta da API não contém dados de verificação."
+
+    if verification.get("overall_valid") is not True:
+        return False, data, "Falhou a verificação de integridade contra a blockchain."
+
+    return True, data, "OK"
+
+
 def get_transaction_data(tx_hash: str) -> dict | None:
     """
     Obter dados de uma transação via API.
@@ -36,34 +91,8 @@ def get_transaction_data(tx_hash: str) -> dict | None:
     if not tx_hash.startswith("0x"):
         tx_hash = f"0x{tx_hash}"
     
-    try:
-        rprint(f"\n[dim]Consultando API para: {tx_hash}[/dim]")
-        
-        req = urlrequest.Request(
-            url=f"{BASE_URL}/verification/transaction/{tx_hash}",
-            method="GET"
-        )
-        
-        with urlrequest.urlopen(req) as resp:  # noqa: S310
-            data = json.loads(resp.read().decode("utf-8"))
-        
-        if data.get("error"):
-            rprint(f"[red]✗ Erro da API: {data.get('error')}[/red]")
-            return None
-        
-        return data
-    
-    except urlrequest.HTTPError as e:
-        try:
-            error_data = json.loads(e.read().decode("utf-8"))
-            rprint(f"[red]✗ Erro HTTP {e.code}:[/red] {error_data.get('detail', str(error_data))}")
-        except Exception:
-            rprint(f"[red]✗ Erro HTTP {e.code}:[/red] {e.reason}")
-        return None
-    
-    except Exception as e:
-        rprint(f"[red]✗ Erro ao consultar API:[/red] {e}")
-        return None
+    rprint(f"\n[dim]Consultando API para: {tx_hash}[/dim]")
+    return get_api_json(f"/verification/transaction/{tx_hash}", verbose=True)
 
 
 

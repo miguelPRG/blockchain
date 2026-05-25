@@ -2,15 +2,7 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from app.core.settings import settings
-
 router = APIRouter(prefix="/config", tags=["config"])
-
-# ============================================================
-# Constantes
-# ============================================================
-SUPPLY_MANAGER_ADDRESS = "0x9D77a7336C19eE8975Eb6267c2aF384B90C73455"
-
 
 # ============================================================
 # Modelos Pydantic
@@ -29,6 +21,18 @@ class AnchorTransactionPrepareRequest(BaseModel):
     item_id: str
     contract_address: str
     from_address: str
+
+
+class DeployTransactionPrepareRequest(BaseModel):
+    """Pedido para preparar deployment sem assinatura."""
+
+    from_address: str
+
+
+class SignedDeployTransactionRequest(BaseModel):
+    """Pedido para publicar deployment já assinado no cliente."""
+
+    signed_transaction: str
 
 
 @router.post("/authenticate-manager")
@@ -97,18 +101,35 @@ def validate_contract(req: ContractValidationRequest) -> dict:
 
 @router.post("/deploy-contract")
 def deploy_contract() -> dict:
-    """Fazer deploy do contrato usando a chave do manager configurada no backend."""
-    if not settings.manager_key:
-        raise HTTPException(
-            status_code=500,
-            detail="MANAGER_KEY não configurada no backend.",
-        )
+    """Endpoint antigo: deployment deve ser assinado no CLI."""
+    raise HTTPException(
+        status_code=410,
+        detail="Use /config/prepare-deploy-contract e /config/broadcast-deploy-contract. Private keys must stay in the CLI.",
+    )
 
-    from app.services.deploy_service import auto_deploy_if_needed
 
-    contract_address = auto_deploy_if_needed(verbose=False, manager_key=settings.manager_key)
-    if not contract_address:
-        raise HTTPException(status_code=500, detail="Falha ao fazer deploy do contrato.")
+@router.post("/prepare-deploy-contract")
+def prepare_deploy_contract(req: DeployTransactionPrepareRequest) -> dict:
+    """Preparar transação de deployment para assinatura local no cliente."""
+    from app.services.deploy_service import build_deploy_transaction
+
+    try:
+        transaction = build_deploy_transaction(req.from_address)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    return {"transaction": _json_safe_transaction(transaction)}
+
+
+@router.post("/broadcast-deploy-contract")
+def broadcast_deploy_contract(req: SignedDeployTransactionRequest) -> dict:
+    """Publicar transação de deployment já assinada pelo cliente."""
+    from app.services.deploy_service import broadcast_signed_deploy_transaction
+
+    try:
+        contract_address = broadcast_signed_deploy_transaction(req.signed_transaction)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
 
     return {
         "success": True,
