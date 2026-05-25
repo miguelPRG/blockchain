@@ -25,5 +25,8 @@ class Manifest(Base):
     payload_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
     signature: Mapped[str] = mapped_column(Text, nullable=False)
     public_key: Mapped[str] = mapped_column(Text, nullable=False)
+    manager_signature: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    manager_public_key: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    contract_address: Mapped[str] = mapped_column(String(42), nullable=False, default="")
     tx_hash: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

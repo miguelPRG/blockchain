@@ -6,16 +6,16 @@ import json
 import sys
 import logging
 import os
-from pathlib import Path
 from datetime import datetime, timezone
-from urllib import request as urlrequest
+from pathlib import Path
 
 from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Prompt, Confirm
+from rich.table import Table
 try:
     from dotenv import load_dotenv
-    load_dotenv()
+    load_dotenv(Path(__file__).parent / ".env")
 except Exception:
     # dotenv is optional; if not installed, environment variables must be set externally
     pass
@@ -23,9 +23,18 @@ except Exception:
 # Adicionar PYTHONPATH para importar da raiz
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-# Importações de funções criptográficas compartilhadas
-from shared.hashing import sha256_hex
-from shared.security import sign_hash, get_public_key_from_private, address_from_private_key
+from client.api_client import (
+    get_json,
+    post_json,
+    put_json,
+    read_contract_address_from_env,
+    save_contract_address_to_env,
+    validate_contract_via_api,
+)
+from client.blockchain_client import deploy_contract_locally
+from client.config import BASE_URL, SUPPLY_MANAGER_ADDRESS
+from client.request_signing import create_signed_api_request
+from shared.security import address_from_private_key, public_key_from_private_key
 
 
 # ============================================================
@@ -44,256 +53,58 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 console = Console()
 
-# URL da API FastAPI
-BASE_URL = "http://127.0.0.1:8000"
-SUPPLY_MANAGER_ADDRESS = "0x9D77a7336C19eE8975Eb6267c2aF384B90C73455"
-
-
-# ============================================================
-# Funções de Inicialização - Verificar e Autenticar Contrato
-# ============================================================
-
-def deploy_contract_via_api() -> str | None:
-    """
-    Fazer deployment de um novo contrato via API.
-    
-    Requer que o Supply Manager tenha sido autenticado.
-    
-    Returns:
-        Endereço do contrato, ou None se falhou
-    """
-    try:
-        req = urlrequest.Request(
-            url=f"{BASE_URL}/config/deploy-contract",
-            method="POST",
-            data=b"{}",
-        )
-        req.add_header("Content-Type", "application/json")
-        
-        with urlrequest.urlopen(req) as resp:  # noqa: S310
-            result = json.loads(resp.read().decode("utf-8"))
-            
-            if result.get("success"):
-                contract_addr = result.get("contract_address")
-                console.print(f"[bold green]✓ Contrato deployado:[/bold green] {contract_addr}")
-                console.print(f"[dim]Explorer: {result.get('explorer_url')}[/dim]")
-                return contract_addr
-            else:
-                console.print(f"[red]✗ Falha no deployment[/red]")
-                return None
-    
-    except urlrequest.HTTPError as e:
-        try:
-            error_detail = json.loads(e.read().decode("utf-8"))
-            console.print(f"[red]✗ Erro:[/red] {error_detail.get('detail', str(error_detail))}")
-        except Exception:
-            console.print(f"[red]✗ Erro HTTP {e.code}:[/red] {e.reason}")
-        return None
-    
-    except Exception as e:
-        console.print(f"[red]✗ Erro ao fazer deployment:[/red] {e}")
-        return None
-
-
-def validate_contract_via_api(contract_address: str) -> bool:
-    """
-    Validar se um contrato existe e está deployado na blockchain.
-    
-    Args:
-        contract_address: Endereço do contrato a validar
-    
-    Returns:
-        True se contrato é válido, False caso contrário
-    """
-    try:
-        payload = {"contract_address": contract_address}
-        req = urlrequest.Request(
-            url=f"{BASE_URL}/config/validate-contract",
-            method="POST",
-            data=json.dumps(payload).encode("utf-8"),
-        )
-        req.add_header("Content-Type", "application/json")
-        
-        with urlrequest.urlopen(req) as resp:  # noqa: S310
-            result = json.loads(resp.read().decode("utf-8"))
-            if result.get("success"):
-                console.print(f"[bold green]✓ Contrato Validado:[/bold green] {contract_address}")
-                console.print(f"[dim]Explorer: {result.get('explorer_url')}[/dim]")
-                return True
-            else:
-                console.print(f"[red]✗ Falha na validação[/red]")
-                return False
-    
-    except urlrequest.HTTPError as e:
-        try:
-            error_detail = json.loads(e.read().decode("utf-8"))
-            console.print(f"[red]✗ Erro:[/red] {error_detail.get('detail', str(error_detail))}")
-        except Exception:
-            console.print(f"[red]✗ Erro HTTP {e.code}:[/red] {e.reason}")
-        return False
-    
-    except Exception as e:
-        console.print(f"[red]✗ Erro ao validar:[/red] {e}")
-        return False
-
-
-def read_contract_address_from_env() -> str | None:
-    """
-    Ler CONTRACT_ADDRESS do ficheiro .env local.
-    
-    Returns:
-        Endereço do contrato, ou None se não existir
-    """
-    env_file = Path(__file__).parent / ".env"
-    if env_file.exists():
-        content = env_file.read_text()
-        for line in content.split("\n"):
-            if line.startswith("CONTRACT_ADDRESS="):
-                addr = line.split("=", 1)[1].strip()
-                if addr and addr != "0x0000000000000000000000000000000000000000":
-                    return addr
-    return None
-
-
-def save_contract_address_to_env(address: str) -> None:
-    """
-    Guardar CONTRACT_ADDRESS no ficheiro .env local.
-    
-    Args:
-        address: Endereço do contrato
-    """
-    env_file = Path(__file__).parent / ".env"
-    
-    if env_file.exists():
-        content = env_file.read_text()
-        lines = content.split("\n")
-        
-        found = False
-        for i, line in enumerate(lines):
-            if line.startswith("CONTRACT_ADDRESS="):
-                lines[i] = f"CONTRACT_ADDRESS={address}"
-                found = True
-                break
-        
-        if not found:
-            lines.append(f"CONTRACT_ADDRESS={address}")
-        
-        env_file.write_text("\n".join(lines))
-    else:
-        # Criar novo .env
-        env_file.write_text(f"CONTRACT_ADDRESS={address}\n")
-
-
-def authenticate_manager_with_api(private_key: str) -> bool:
-    """
-    Autenticar o Supply Manager via API.
-    Faz POST a /config/authenticate-manager
-    
-    Args:
-        private_key: Chave privada do Supply Manager
-    
-    Returns:
-        True se autenticação foi bem-sucedida, False caso contrário
-    """
-    try:
-        payload = {"private_key": private_key}
-        req = urlrequest.Request(
-            url=f"{BASE_URL}/config/authenticate-manager",
-            method="POST",
-            data=json.dumps(payload).encode("utf-8"),
-        )
-        req.add_header("Content-Type", "application/json")
-        
-        with urlrequest.urlopen(req) as resp:  # noqa: S310
-            result = json.loads(resp.read().decode("utf-8"))
-            if result.get("success"):
-                console.print(f"[bold green]✓ {result.get('message')}[/bold green]")
-                console.print(f"[dim]Endereço: {result.get('manager_address')}[/dim]")
-                return True
-            else:
-                console.print(f"[red]✗ Falha na autenticação[/red]")
-                return False
-    
-    except urlrequest.HTTPError as e:
-        try:
-            error_detail = json.loads(e.read().decode("utf-8"))
-            console.print(f"[red]✗ Erro:[/red] {error_detail.get('detail', str(error_detail))}")
-        except Exception:
-            console.print(f"[red]✗ Erro HTTP {e.code}:[/red] {e.reason}")
-        return False
-    
-    except Exception as e:
-        console.print(f"[red]✗ Erro ao autenticar:[/red] {e}")
-        return False
-
-
-def initialize_blockchain_setup() -> bool:
-    """
-    Fluxo completo de inicialização:
-    1. Pedir chave privada do Supply Manager e validar
-    2. Autenticar no backend
-    3. Verificar se existe CONTRACT_ADDRESS no .env local
-       - Se existe: validar no backend
-       - Se não existe: fazer deployment de novo contrato
-    4. Guardar endereço do contrato no .env local
-    
-    Returns:
-        True se sucesso, False se falhou
-    """
+def request_and_validate_manager_private_key() -> str | None:
+    """Pede e valida a chave privada do Supply Manager."""
     console.print("\n[bold cyan]🔐 Autenticação do Supply Manager[/bold cyan]")
     console.print(f"[dim]Endereço esperado: {SUPPLY_MANAGER_ADDRESS}[/dim]\n")
-    
-    # ========== PASSO 1: PEDIR E VALIDAR CHAVE PRIVADA ==========
+
     max_attempts = 3
-    private_key = None
-    
+
     for attempt in range(max_attempts):
-        private_key_input = Prompt.ask(
+        private_key = Prompt.ask(
             "[bold]Introduza a chave privada do Supply Manager[/bold]",
-            password=True
+            password=True,
         )
-        
-        if not private_key_input:
+
+        if not private_key:
             console.print("[red]✗ Chave privada não pode estar vazia[/red]")
             continue
-        
-        # Garantir prefixo 0x
-        if not private_key_input.startswith("0x"):
-            private_key_input = f"0x{private_key_input}"
-        
-        # Validar localmente se a chave gera o endereço correto
+
+        if not private_key.startswith("0x"):
+            private_key = f"0x{private_key}"
+
         try:
-            derived_address = address_from_private_key(private_key_input)
+            derived_address = address_from_private_key(private_key)
             if derived_address.lower() != SUPPLY_MANAGER_ADDRESS.lower():
-                console.print(f"[red]✗ Endereço inválido[/red]")
+                console.print("[red]✗ Endereço inválido[/red]")
                 console.print(f"[dim]Esperado: {SUPPLY_MANAGER_ADDRESS}[/dim]")
                 console.print(f"[dim]Obtido: {derived_address}[/dim]\n")
                 remaining = max_attempts - attempt - 1
                 if remaining > 0:
                     console.print(f"[yellow]Tentativas restantes: {remaining}[/yellow]\n")
                 continue
-            
-            private_key = private_key_input
-            console.print(f"[bold green]✓ Chave validada localmente[/bold green]\n")
-            break
-        
+
+            console.print("[bold green]✓ Chave do Supply Manager validada[/bold green]\n")
+            return private_key
+
         except Exception as e:
             console.print(f"[red]✗ Erro ao validar chave:[/red] {e}\n")
-            continue
+
+    console.print("[red]✗ Falha na validação da chave privada[/red]")
+    return None
+
+
+def initialize_blockchain_setup() -> bool:
+    """
+    Fluxo completo de inicialização:
+    1. Verificar se existe CONTRACT_ADDRESS no .env local
+       - Se existe: validar no backend
+       - Se não existe: fazer deployment de novo contrato
+    2. Guardar endereço do contrato no .env local
     
-    if not private_key:
-        console.print("[red]✗ Falha na validação da chave privada[/red]")
-        return False
-    
-    # ========== PASSO 2: AUTENTICAR NO BACKEND ==========
-    console.print("[bold cyan]🔗 Autenticando no backend...[/bold cyan]\n")
-    if not authenticate_manager_with_api(private_key):
-        console.print("[red]✗ Falha na autenticação no backend[/red]")
-        return False
-    
-    console.print("[bold green]✓ Supply Manager autenticado[/bold green]\n")
-    
-    # ========== PASSO 3: VERIFICAR/CRIAR CONTRATO ==========
+    Returns:
+        True se sucesso, False se falhou
+    """
     console.print("[bold cyan]🔗 Verificando Contrato Inteligente...[/bold cyan]\n")
     
     # Tentar ler CONTRACT_ADDRESS do .env local
@@ -314,7 +125,7 @@ def initialize_blockchain_setup() -> bool:
             
             if Confirm.ask("[bold]Deseja fazer deployment de um novo contrato?[/bold]", default=True):
                 console.print("[bold cyan]📦 Fazendo Deployment do Contrato...[/bold cyan]\n")
-                new_contract = deploy_contract_via_api()
+                new_contract = deploy_contract_locally()
                 
                 if new_contract:
                     save_contract_address_to_env(new_contract)
@@ -333,8 +144,8 @@ def initialize_blockchain_setup() -> bool:
         console.print("[dim]Será criado um novo contrato...[/dim]\n")
         
         console.print("[bold cyan]📦 Fazendo Deployment do Contrato...[/bold cyan]\n")
-        
-        new_contract = deploy_contract_via_api()
+
+        new_contract = deploy_contract_locally()
         
         if new_contract:
             save_contract_address_to_env(new_contract)
@@ -383,13 +194,14 @@ USERS = {
 ROLE_TO_RECORD_TYPES = {
     "PRODUCER": ["PRODUCED"],
     "TRANSPORTER": ["TRANSFER", "DELIVERY"],
-    "RECEIVER": ["DELIVERY"],
+    "RECEIVER": ["RECEIVED"],
 }
 
 
 RECORD_TYPE_LABELS = {
     "PRODUCED": "Produção",
     "TRANSFER": "Transferência",
+    "RECEIVED": "Receção",
     "DELIVERY": "Entrega",
 }
 
@@ -433,12 +245,12 @@ def request_and_validate_private_key(user: dict) -> bool:
         
         try:
             # Validar se a chave corresponde ao endereço esperado
-            derived_address = get_address_from_private_key(private_key)
+            derived_address = address_from_private_key(private_key)
             
             if derived_address.lower() == expected_address.lower():
                 # Guardar a chave privada e derivar a chave pública
                 user["priv"] = private_key
-                user["public_key"] = get_public_key(private_key)
+                user["public_key"] = public_key_from_private_key(private_key)
                 
                 console.print(f"[bold green]✓ Autenticação bem-sucedida![/bold green]")
                 console.print(f"[dim]Chave pública: {user['public_key']}[/dim]")
@@ -462,78 +274,6 @@ def request_and_validate_private_key(user: dict) -> bool:
     return False
 
 
-# ============================================================
-# Funções auxiliares
-# ============================================================
-
-def strip_0x(value: str) -> str:
-    """Remove o prefixo 0x caso exista."""
-    return value[2:] if value.startswith("0x") else value
-
-
-def get_public_key(private_key: str) -> str:
-    """Obtém a chave pública a partir da chave privada."""
-    return f"0x{get_public_key_from_private(strip_0x(private_key))}"
-
-
-def get_address_from_private_key(private_key: str) -> str:
-    """Obtém o endereço Ethereum correto a partir da chave privada."""
-    return address_from_private_key(private_key)
-
-
-def post_json(url: str, payload: dict) -> dict:
-    """Envia uma carga JSON para a API e devolve a resposta JSON."""
-    try:
-        req = urlrequest.Request(
-            url=url,
-            method="POST",
-            data=json.dumps(payload).encode("utf-8"),
-        )
-        req.add_header("Content-Type", "application/json")
-
-        with urlrequest.urlopen(req) as resp:  # noqa: S310
-            return json.loads(resp.read().decode("utf-8"))
-
-    except urlrequest.HTTPError as e:
-        try:
-            error_detail = json.loads(e.read().decode("utf-8"))
-            console.print(
-                f"[red]✗ Erro HTTP {e.code}:[/red] "
-                f"{error_detail.get('detail', str(error_detail))}"
-            )
-        except Exception:
-            console.print(f"[red]✗ Erro HTTP {e.code}:[/red] {e.reason}")
-        return {}
-
-    except Exception as e:
-        console.print(f"[red]✗ Erro na requisição:[/red] {e}")
-        return {}
-
-
-def get_json(url: str) -> dict:
-    """Faz um pedido GET e devolve a resposta JSON."""
-    try:
-        req = urlrequest.Request(url=url, method="GET")
-
-        with urlrequest.urlopen(req) as resp:  # noqa: S310
-            return json.loads(resp.read().decode("utf-8"))
-
-    except urlrequest.HTTPError as e:
-        try:
-            error_detail = json.loads(e.read().decode("utf-8"))
-            console.print(
-                f"[red]✗ Erro HTTP {e.code}:[/red] "
-                f"{error_detail.get('detail', str(error_detail))}"
-            )
-        except Exception:
-            console.print(f"[red]✗ Erro HTTP {e.code}:[/red] {e.reason}")
-        return {}
-
-    except Exception as e:
-        console.print(f"[red]✗ Erro no pedido GET:[/red] {e}")
-        return {}
-
-
 def show_header(current_user: dict | None = None) -> None:
     """Mostra o cabeçalho da aplicação."""
     console.clear()
@@ -549,7 +289,7 @@ def show_header(current_user: dict | None = None) -> None:
 
     if current_user:
         private_key = current_user["priv"]
-        address = get_address_from_private_key(private_key)
+        address = address_from_private_key(private_key)
 
         console.print(f"[bold green]👤 Utilizador Ativo:[/bold green] {current_user['name']}")
         console.print(f"[dim]Papel: {current_user['role']}[/dim]")
@@ -584,8 +324,6 @@ def select_user(default: str = "1") -> str | None:
 def create_manifest_interactive(
     base_url: str,
     private_key: str,
-    public_key: str,
-    signer_id: str,
 ) -> tuple[str | None, str | None]:
     """
     Cria um manifesto de forma interativa.
@@ -617,7 +355,10 @@ def create_manifest_interactive(
         console.print("[yellow]⊘ Cancelado[/yellow]")
         return None, None
 
-    creator = get_address_from_private_key(private_key)
+    manager_private_key = request_and_validate_manager_private_key()
+    if not manager_private_key:
+        console.print("[red]✗ Criação cancelada: Supply Manager não validado[/red]")
+        return None, None
 
     payload = {
         "manifest_id": manifest_id,
@@ -627,27 +368,29 @@ def create_manifest_interactive(
         "ingredients": ingredients,
         "origin": origin,
         "sustainability": sustainability,
-        "creator": creator,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
-    console.print("\n[dim]Calculando hash SHA-256 do manifesto...[/dim]")
+    console.print("\n[dim]Assinando payload do manifesto...[/dim]")
 
-    payload_hash = sha256_hex(payload)
-    signature = sign_hash(strip_0x(private_key), payload_hash)
+    contract_address = read_contract_address_from_env() or Prompt.ask("Contract address (0x...)")
+    try:
+        body, payload_hash = create_signed_api_request(
+            payload=payload,
+            user_private_key=private_key,
+            manager_private_key=manager_private_key,
+            role="PRODUCER",
+            contract_address=contract_address,
+            item_id=payload["manifest_id"],
+            timestamp_iso=payload["timestamp"],
+        )
+    except RuntimeError as exc:
+        console.print(f"[red]✗ {exc}[/red]")
+        return None, None
 
     console.print(f"[yellow]PAYLOAD HASH:[/yellow] {payload_hash}")
-    console.print(f"[yellow]SIGNATURE:[/yellow] {signature}")
-
-    body = {
-        "payload": payload,
-        "auth": {
-            "public_key": public_key,
-            "signature": signature,
-            "role": "PRODUCER",
-            "signer_id": signer_id,
-        },
-    }
+    console.print(f"[yellow]USER SIGNATURE:[/yellow] {body['auth']['signature']}")
+    console.print(f"[yellow]MANAGER SIGNATURE:[/yellow] {body['auth']['manager_signature']}")
 
     console.print(f"\n[dim]Enviando para {base_url}/manifests...[/dim]")
     result = post_json(f"{base_url}/manifests", body)
@@ -657,6 +400,10 @@ def create_manifest_interactive(
         return None, None
 
     console.print("[green]✓ Manifesto criado com sucesso![/green]")
+    tx_hash = result.get("tx_hash") or result.get("anchor", {}).get("tx_hash")
+    if tx_hash:
+        console.print(f"[bold cyan]TXID da transação:[/bold cyan] {tx_hash}")
+        console.print(f"[dim]Explorer: https://sepolia.etherscan.io/tx/{tx_hash}[/dim]")
 
     if Confirm.ask(
         "[bold]Criar também o registo PRODUCED automaticamente?[/bold]",
@@ -665,11 +412,9 @@ def create_manifest_interactive(
         produced_result = create_produced_record_automatically(
             base_url=base_url,
             private_key=private_key,
-            public_key=public_key,
             manifest_id=manifest_id,
             quantity=quantity,
             unit=unit,
-            signer_id=signer_id,
         )
 
         if produced_result:
@@ -685,15 +430,16 @@ def create_manifest_interactive(
 def create_produced_record_automatically(
     base_url: str,
     private_key: str,
-    public_key: str,
     manifest_id: str,
     quantity: float,
     unit: str,
-    signer_id: str,
 ) -> str | None:
     """Cria automaticamente o registo PRODUCED associado ao manifesto."""
 
-    user_address = get_address_from_private_key(private_key)
+    manager_private_key = request_and_validate_manager_private_key()
+    if not manager_private_key:
+        console.print("[red]✗ Registo PRODUCED cancelado: Supply Manager não validado[/red]")
+        return None
 
     payload = {
         "record_id": f"produced-{manifest_id}",
@@ -701,28 +447,33 @@ def create_produced_record_automatically(
         "manifest_id": manifest_id,
         "quantity": quantity,
         "unit": unit,
-        "user": user_address,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "notes": "Registo PRODUCED criado automaticamente com o manifesto.",
     }
 
-    payload_hash = sha256_hex(payload)
-    signature = sign_hash(strip_0x(private_key), payload_hash)
-
-    body = {
-        "payload": payload,
-        "auth": {
-            "public_key": public_key,
-            "signature": signature,
-            "role": "PRODUCER",
-            "signer_id": signer_id,
-        },
-    }
+    contract_address = read_contract_address_from_env() or Prompt.ask("Contract address (0x...)")
+    try:
+        body, _ = create_signed_api_request(
+            payload=payload,
+            user_private_key=private_key,
+            manager_private_key=manager_private_key,
+            role="PRODUCER",
+            contract_address=contract_address,
+            item_id=payload["record_id"],
+            timestamp_iso=payload["timestamp"],
+        )
+    except RuntimeError as exc:
+        console.print(f"[red]✗ {exc}[/red]")
+        return None
 
     console.print("[dim]Criando registo PRODUCED automático...[/dim]")
     result = post_json(f"{base_url}/records", body)
 
     if result:
+        tx_hash = result.get("tx_hash") or result.get("anchor", {}).get("tx_hash")
+        if tx_hash:
+            console.print(f"[bold cyan]TXID da transação:[/bold cyan] {tx_hash}")
+            console.print(f"[dim]Explorer: https://sepolia.etherscan.io/tx/{tx_hash}[/dim]")
         return payload["record_id"]
 
     return None
@@ -735,9 +486,7 @@ def create_produced_record_automatically(
 def create_record_interactive_for_role(
     base_url: str,
     private_key: str,
-    public_key: str,
     role: str,
-    signer_id: str,
     last_manifest_id: str | None = None,
 ) -> str | None:
     """Cria um registo filtrando os tipos permitidos pelo papel do utilizador."""
@@ -790,7 +539,10 @@ def create_record_interactive_for_role(
         console.print("[yellow]⊘ Cancelado[/yellow]")
         return None
 
-    user_address = get_address_from_private_key(private_key)
+    manager_private_key = request_and_validate_manager_private_key()
+    if not manager_private_key:
+        console.print("[red]✗ Criação cancelada: Supply Manager não validado[/red]")
+        return None
 
     payload = {
         "record_id": record_id,
@@ -798,34 +550,41 @@ def create_record_interactive_for_role(
         "manifest_id": manifest_id,
         "quantity": quantity,
         "unit": unit,
-        "user": user_address,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "notes": notes,
     }
 
-    console.print("\n[dim]Calculando hash SHA-256 do registo...[/dim]")
+    console.print("\n[dim]Assinando payload do registo...[/dim]")
 
-    payload_hash = sha256_hex(payload)
-    signature = sign_hash(strip_0x(private_key), payload_hash)
+    contract_address = read_contract_address_from_env() or Prompt.ask("Contract address (0x...)")
+    try:
+        body, payload_hash = create_signed_api_request(
+            payload=payload,
+            user_private_key=private_key,
+            manager_private_key=manager_private_key,
+            role=role,
+            contract_address=contract_address,
+            item_id=payload["record_id"],
+            timestamp_iso=payload["timestamp"],
+        )
+    except RuntimeError as exc:
+        console.print(f"[red]✗ {exc}[/red]")
+        return None
 
     console.print(f"[yellow]PAYLOAD HASH:[/yellow] {payload_hash}")
-    console.print(f"[yellow]SIGNATURE:[/yellow] {signature}")
-
-    body = {
-        "payload": payload,
-        "auth": {
-            "public_key": public_key,
-            "signature": signature,
-            "role": role,
-            "signer_id": signer_id,
-        },
-    }
+    console.print("[yellow]SIGNED ANCHOR TX:[/yellow] pronta para broadcast no backend")
+    console.print(f"[yellow]USER SIGNATURE:[/yellow] {body['auth']['signature']}")
+    console.print(f"[yellow]MANAGER SIGNATURE:[/yellow] {body['auth']['manager_signature']}")
 
     console.print(f"\n[dim]Enviando para {base_url}/records...[/dim]")
     result = post_json(f"{base_url}/records", body)
 
     if result:
         console.print("[green]✓ Registo criado com sucesso![/green]")
+        tx_hash = result.get("tx_hash") or result.get("anchor", {}).get("tx_hash")
+        if tx_hash:
+            console.print(f"[bold cyan]TXID da transação:[/bold cyan] {tx_hash}")
+            console.print(f"[dim]Explorer: https://sepolia.etherscan.io/tx/{tx_hash}[/dim]")
         return record_id
 
     console.print("[red]✗ Erro ao criar registo[/red]")
@@ -855,10 +614,11 @@ def verify_data() -> None:
     endpoint_path = endpoint_map[endpoint_choice.lower()]
     item_label = "Manifesto" if endpoint_choice == "m" else "Registo"
 
-    item_id = Prompt.ask(f"ID de {item_label}")
+    item_id = Prompt.ask(f"ID de {item_label} (Enter para usar o último)", default="")
 
     # Fazer GET que já inclui verificação criptográfica integrada
-    data = get_json(f"{BASE_URL}/{endpoint_path}/{item_id}")
+    url = f"{BASE_URL}/{endpoint_path}/{item_id}" if item_id else f"{BASE_URL}/{endpoint_path}"
+    data = get_json(url)
 
     if not data:
         console.print("[red]✗ Não foi possível obter os dados[/red]")
@@ -879,11 +639,12 @@ def verify_data() -> None:
     payload_hash_blockchain = data.get("payload_hash", "N/A")
     payload_hash_current = data.get("payload_hash_current", "N/A")
     
-    # LÓGICA SIMPLES: Se hash é igual na blockchain, é VÁLIDO. PRONTO.
     hash_match = payload_hash_blockchain == payload_hash_current
-    is_valid = hash_match
+    is_valid = verification.get("overall_valid") is True
     
-    signature_valid = data.get("verification", {}).get("signature_valid", False)
+    signature_valid = verification.get("signature_valid")
+    manager_public_key_valid = verification.get("manager_public_key_valid")
+    manager_signature_valid = verification.get("manager_signature_valid")
 
     # ========== BANNER PRINCIPAL ==========
     if is_valid:
@@ -913,6 +674,18 @@ def verify_data() -> None:
     payload = data.get("payload", {})
     console.print(json.dumps(payload, indent=2, ensure_ascii=False))
 
+    tx_hash = data.get("tx_hash") or data.get("anchor", {}).get("tx_hash")
+    if tx_hash:
+        console.print(
+            Panel(
+                f"[bold cyan]{tx_hash}[/bold cyan]\n\n"
+                f"[dim]https://sepolia.etherscan.io/tx/{tx_hash}[/dim]",
+                title="[bold]🔗 TXID Blockchain[/bold]",
+                border_style="cyan",
+                padding=(1, 2),
+            )
+        )
+
     # ========== HASH PAYLOAD ==========
     match_icon = "[bold green]✓[/bold green]" if hash_match else "[bold red]✗[/bold red]"
     match_status = "[green]Igual (íntegro)[/green]" if hash_match else "[red]Diferente (alterado)[/red]"
@@ -927,13 +700,40 @@ def verify_data() -> None:
         )
     )
 
+    def status_text(value: bool | None) -> str:
+        if value is True:
+            return "[green]✓ Válido[/green]"
+        if value is False:
+            return "[red]✗ Inválido[/red]"
+        return "[yellow]⚠ Não disponível[/yellow]"
+
+    signature_table = Table(show_header=True, header_style="bold cyan")
+    signature_table.add_column("Verificação", style="cyan")
+    signature_table.add_column("Resultado", style="white")
+    signature_table.add_row(
+        "Assinatura user ↔ chave pública user",
+        status_text(signature_valid),
+    )
+    signature_table.add_row(
+        "Assinatura manager ↔ chave pública manager",
+        status_text(manager_signature_valid),
+    )
+    console.print(
+        Panel(
+            signature_table,
+            title="[bold]🔐 Assinaturas[/bold]",
+            border_style="cyan",
+            padding=(1, 2),
+        )
+    )
+
     # ========== RESUMO FINAL ==========
     console.print()
     if is_valid:
         console.print(
             Panel(
                 "[bold green]🎉 Dados autenticados e íntegros![/bold green]\n"
-                "[dim]Hash confirmado na blockchain - nenhuma alteração detectada.[/dim]",
+                "[dim]Hash, blockchain, user e Supply Manager confirmados.[/dim]",
                 border_style="green",
                 padding=(1, 2),
             )
@@ -942,7 +742,7 @@ def verify_data() -> None:
         console.print(
             Panel(
                 "[bold red]⚠️  ALERTA: Dados inválidos![/bold red]\n"
-                "[dim red]Hash não corresponde ao que está na blockchain - dados foram alterados![/dim red]",
+                "[dim red]Hash, transação ou assinaturas não correspondem aos dados guardados.[/dim red]",
                 border_style="red",
                 padding=(1, 2),
             )
@@ -953,52 +753,54 @@ def verify_data() -> None:
 # Ataque / Tamper
 # ============================================================
 
-def simulate_attack() -> None:
+def simulate_attack(
+    *,
+    role: str,
+    last_manifest_id: str | None = None,
+    last_record_id: str | None = None,
+) -> None:
     """Simula um ataque alterando dados na base de dados."""
 
     console.print("\n[bold red]⚠️ Simular Ataque / Alteração de Dados[/bold red]")
 
-    endpoint_choice = Prompt.ask(
-        "O que deseja alterar? Manifestos (m) ou Registos (r)",
-        choices=["m", "r"],
-        default="r",
+    if role == "PRODUCER":
+        endpoint = "manifests"
+        item_label = "Manifesto"
+        item_id_key = "manifest_id"
+        default_item_id = last_manifest_id
+        console.print("[dim]Alice/Producer só pode alterar manifestos.[/dim]")
+    else:
+        endpoint = "records"
+        item_label = "Registo"
+        item_id_key = "record_id"
+        default_item_id = last_record_id
+        console.print("[dim]Transporter/Receiver só podem alterar registos.[/dim]")
+
+    item_id = Prompt.ask(
+        f"ID de {item_label} a ser alterado (Enter para usar o último)",
+        default=default_item_id or "",
     )
+    if not item_id:
+        latest = get_json(f"{BASE_URL}/{endpoint}")
+        item_id = latest.get("payload", {}).get(item_id_key, "")
 
-    endpoint_map = {
-        "m": "manifests",
-        "r": "records",
-    }
+    if not item_id:
+        console.print(f"[red]✗ Não foi possível determinar o último {item_label.lower()}[/red]")
+        return
 
-    endpoint = endpoint_map[endpoint_choice.lower()]
-    item_label = "Manifesto" if endpoint_choice == "m" else "Registo"
-
-    item_id = Prompt.ask(f"ID de {item_label} a ser alterado")
     new_quantity = Prompt.ask("Nova quantidade falsa")
 
-    try:
-        new_quantity_float = float(new_quantity)
+    data = put_json(
+        f"{BASE_URL}/{endpoint}/{item_id}/tamper",
+        {"new_quantity": float(new_quantity)},
+    )
+    if not data:
+        return
 
-        body = {
-            "new_quantity": new_quantity_float,
-        }
-
-        req = urlrequest.Request(
-            url=f"{BASE_URL}/{endpoint}/{item_id}/tamper",
-            method="PUT",
-            data=json.dumps(body).encode("utf-8"),
-        )
-        req.add_header("Content-Type", "application/json")
-
-        with urlrequest.urlopen(req) as resp:  # noqa: S310
-            data = json.loads(resp.read().decode("utf-8"))
-
-        console.print(f"[bold red]✓ {data.get('message', 'Alterado com sucesso')}[/bold red]")
-        console.print(
-            "[dim]Agora usa a opção 'Verificar Dados' para mostrar que a integridade falha.[/dim]"
-        )
-
-    except Exception as e:
-        console.print(f"[red]✗ Erro ao simular ataque: {e}[/red]")
+    console.print(f"[bold red]✓ {data.get('message', 'Alterado com sucesso')}[/bold red]")
+    console.print(
+        "[dim]Agora usa a opção 2, 'Verificar Dados', para mostrar que a integridade falha.[/dim]"
+    )
 
 
 # ============================================================
@@ -1050,6 +852,7 @@ def run_app(initial_user_id: str | None) -> None:
 
     current_user_id = initial_user_id
     last_manifest_id: str | None = None
+    last_record_id: str | None = None
 
     while True:
         user = USERS[current_user_id]
@@ -1060,8 +863,6 @@ def run_app(initial_user_id: str | None) -> None:
             console.print("[red]✗ Erro: chave privada não autenticada[/red]")
             return
         
-        public_key = user["public_key"]
-
         show_header(user)
 
         console.print("\n[bold]O que deseja fazer?[/bold]\n")
@@ -1073,6 +874,8 @@ def run_app(initial_user_id: str | None) -> None:
 
         if last_manifest_id:
             console.print(f"\n[dim]Último manifesto: {last_manifest_id}[/dim]")
+        if last_record_id:
+            console.print(f"[dim]Último registo: {last_record_id}[/dim]")
 
         choice = Prompt.ask("\nEscolha", choices=list(options.keys()), default="1")
         action = options[choice][0]
@@ -1081,22 +884,20 @@ def run_app(initial_user_id: str | None) -> None:
             manifest_id, _ = create_manifest_interactive(
                 base_url=BASE_URL,
                 private_key=private_key,
-                public_key=public_key,
-                signer_id=user["id"],
             )
 
             if manifest_id:
                 last_manifest_id = manifest_id
 
         elif action == "create_record":
-            create_record_interactive_for_role(
+            record_id = create_record_interactive_for_role(
                 base_url=BASE_URL,
                 private_key=private_key,
-                public_key=public_key,
                 role=role,
-                signer_id=user["id"],
                 last_manifest_id=last_manifest_id,
             )
+            if record_id:
+                last_record_id = record_id
 
         elif action == "verify":
             verify_data()
@@ -1108,7 +909,11 @@ def run_app(initial_user_id: str | None) -> None:
             continue
 
         elif action == "attack":
-            simulate_attack()
+            simulate_attack(
+                role=role,
+                last_manifest_id=last_manifest_id,
+                last_record_id=last_record_id,
+            )
 
         elif action == "exit":
             console.print("[yellow]Até logo! 👋[/yellow]")

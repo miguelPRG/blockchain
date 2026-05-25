@@ -1,9 +1,10 @@
 """Serviço de verificação independente para integridade e não-repúdio."""
 
 from shared.hashing import sha256_hex
-from shared.security import verify_signature
+from shared.security import ethereum_address_from_public_key, verify_signature
 from app.schemas.verification import VerificationRequest, VerificationResponse
 from app.services.blockchain_service import decode_anchor_tx
+from app.services.signature_service import SUPPLY_MANAGER_ADDRESS
 
 def verify_payload(request: VerificationRequest) -> VerificationResponse:
     """Recomputar hash e comparar com a prova ancorada na blockchain."""
@@ -14,7 +15,20 @@ def verify_payload(request: VerificationRequest) -> VerificationResponse:
     if request.public_key and request.signature:
         signature_valid = verify_signature(request.public_key, recomputed_hash, request.signature)
 
-    blockchain_tx = decode_anchor_tx(request.tx_hash) if request.tx_hash else None
+    manager_public_key_valid = None
+    if request.manager_public_key:
+        manager_address = ethereum_address_from_public_key(request.manager_public_key)
+        manager_public_key_valid = manager_address.lower() == SUPPLY_MANAGER_ADDRESS.lower()
+
+    manager_signature_valid = None
+    if request.manager_public_key and request.manager_signature:
+        manager_signature_valid = verify_signature(
+            request.manager_public_key,
+            recomputed_hash,
+            request.manager_signature,
+        )
+
+    blockchain_tx = decode_anchor_tx(request.tx_hash, request.contract_address) if request.tx_hash else None
     blockchain_payload_hash = blockchain_tx["payload_hash"] if blockchain_tx else None
     blockchain_item_id = blockchain_tx["item_id"] if blockchain_tx else None
     blockchain_hash_matches = (
@@ -32,17 +46,26 @@ def verify_payload(request: VerificationRequest) -> VerificationResponse:
         else None
     )
 
-    # Lógica de verificação SIMPLES:
-    # É válido se o hash na blockchain corresponde ao hash recalculado
-    # FIM. Esquece o resto.
-    
-    overall_valid = blockchain_hash_matches is True if request.tx_hash else False
+    overall_valid = all(
+        result is True
+        for result in (
+            hash_matches,
+            signature_valid,
+            manager_public_key_valid,
+            manager_signature_valid,
+            blockchain_hash_matches,
+            blockchain_tx_valid,
+            blockchain_item_matches,
+        )
+    )
     
     return VerificationResponse(
         payload=request.payload,
         recomputed_hash=recomputed_hash,
         hash_matches=hash_matches,
         signature_valid=signature_valid,
+        manager_public_key_valid=manager_public_key_valid,
+        manager_signature_valid=manager_signature_valid,
         blockchain_payload_hash=blockchain_payload_hash,
         blockchain_hash_matches=blockchain_hash_matches,
         blockchain_tx_valid=blockchain_tx_valid,

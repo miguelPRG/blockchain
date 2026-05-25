@@ -73,33 +73,49 @@ def check_connection_status() -> str:
         return f"Sepolia connection error: {exc}"
 
 
-def anchor_hash(payload_hash: str, timestamp: int, item_id: str, signer_private_key: str | None = None) -> AnchorResult:
-    """Ancorar apenas o hash na blockchain."""
+def anchor_hash(
+    payload_hash: str,
+    timestamp: int,
+    item_id: str,
+    contract_address: str,
+    signer_private_key: str | None = None,
+    manager_key: str | None = None,
+) -> AnchorResult:
+    """Ancorar apenas o hash na blockchain.
+    
+    Args:
+        payload_hash: Hash SHA-256 da carga
+        timestamp: Unix timestamp
+        item_id: Identificador do item
+        contract_address: Endereço do contrato (obrigatório)
+        signer_private_key: Chave privada do utilizador (opcional)
+        manager_key: Chave privada do gestor (fallback)
+    """
     w3 = get_web3()
     if w3 is None:
         return AnchorResult(tx_hash=None, anchored=False, reason="RPC URL not configured.")
-    if not settings.contract_address or settings.contract_address == "0x0000000000000000000000000000000000000000":
-        return AnchorResult(tx_hash=None, anchored=False, reason="Contract address not configured.")
-    # If no signer_private_key provided, fall back to server deploy key
-    if not signer_private_key and not settings.manager_key:
-        return AnchorResult(tx_hash=None, anchored=False, reason="Private key not configured.")
+    if not contract_address or contract_address == "0x0000000000000000000000000000000000000000":
+        return AnchorResult(tx_hash=None, anchored=False, reason="Contract address not provided.")
+    # Se não houver signer_private_key, use manager_key
+    if not signer_private_key and not manager_key:
+        return AnchorResult(tx_hash=None, anchored=False, reason="Private key not provided.")
     if not item_id or not item_id.strip():
         return AnchorResult(tx_hash=None, anchored=False, reason="Item ID not provided.")
 
-    deploy_key_to_use = signer_private_key if signer_private_key else settings.manager_key
+    deploy_key_to_use = signer_private_key if signer_private_key else manager_key
     
     # Log which key is being used
     key_source = "USER" if signer_private_key else "DEPLOY"
     logger.info(f"[anchor_hash] Using {key_source} key for signing")
     
     account = w3.eth.account.from_key(deploy_key_to_use)
-    contract = w3.eth.contract(address=Web3.to_checksum_address(settings.contract_address), abi=ANCHOR_ABI)
+    contract = w3.eth.contract(address=Web3.to_checksum_address(contract_address), abi=ANCHOR_ABI)
     nonce = w3.eth.get_transaction_count(account.address, "pending")
     
     logger.info("=" * 80)
     logger.info("📦 ANCORAR HASH NA BLOCKCHAIN")
     logger.info("=" * 80)
-    logger.info(f"[CONTRATO] {settings.contract_address}")
+    logger.info(f"[CONTRATO] {contract_address}")
     logger.info(f"[CONTA] {account.address}")
     logger.info(f"[NONCE] {nonce}")
     logger.info(f"  • Hash: {payload_hash}")
@@ -180,6 +196,119 @@ def anchor_hash(payload_hash: str, timestamp: int, item_id: str, signer_private_
         return AnchorResult(tx_hash=None, anchored=False, reason=str(e))
 
 
+def sign_anchor_transaction(
+    *,
+    payload_hash: str,
+    timestamp: int,
+    item_id: str,
+    contract_address: str,
+    signer_private_key: str,
+) -> str:
+    """Construir e assinar localmente uma transação anchorHash sem a publicar."""
+    w3 = get_web3()
+    if w3 is None:
+        raise RuntimeError("RPC URL not configured.")
+    if not contract_address or contract_address == "0x0000000000000000000000000000000000000000":
+        raise RuntimeError("Contract address not provided.")
+    if not item_id or not item_id.strip():
+        raise RuntimeError("Item ID not provided.")
+
+    account = w3.eth.account.from_key(signer_private_key)
+    contract = w3.eth.contract(address=Web3.to_checksum_address(contract_address), abi=ANCHOR_ABI)
+    latest_block = w3.eth.get_block("latest")
+    base_fee = latest_block.get("baseFeePerGas") or w3.eth.gas_price
+    priority_fee = w3.eth.max_priority_fee if hasattr(w3.eth, "max_priority_fee") else 2 * _GWEI
+
+    txn = contract.functions.anchorHash(
+        bytes.fromhex(payload_hash),
+        timestamp,
+        item_id,
+    ).build_transaction(
+        {
+            "from": account.address,
+            "nonce": w3.eth.get_transaction_count(account.address, "pending"),
+            "gas": 200000,
+            "chainId": w3.eth.chain_id,
+            "maxPriorityFeePerGas": int(priority_fee),
+            "maxFeePerGas": int(base_fee * 2 + priority_fee),
+            "type": 2,
+        }
+    )
+    signed = w3.eth.account.sign_transaction(txn, private_key=signer_private_key)
+    return signed.raw_transaction.hex()
+
+
+def build_anchor_transaction(
+    *,
+    payload_hash: str,
+    timestamp: int,
+    item_id: str,
+    contract_address: str,
+    from_address: str,
+) -> dict:
+    """Construir transação anchorHash sem assinar.
+
+    O backend usa o RPC para nonce/gas/chainId, mas não recebe chave privada.
+    """
+    w3 = get_web3()
+    if w3 is None:
+        raise RuntimeError("RPC URL not configured.")
+    if not contract_address or contract_address == "0x0000000000000000000000000000000000000000":
+        raise RuntimeError("Contract address not provided.")
+    if not item_id or not item_id.strip():
+        raise RuntimeError("Item ID not provided.")
+    if not from_address or not from_address.startswith("0x"):
+        raise RuntimeError("Signer address not provided.")
+
+    contract = w3.eth.contract(address=Web3.to_checksum_address(contract_address), abi=ANCHOR_ABI)
+    latest_block = w3.eth.get_block("latest")
+    base_fee = latest_block.get("baseFeePerGas") or w3.eth.gas_price
+    priority_fee = w3.eth.max_priority_fee if hasattr(w3.eth, "max_priority_fee") else 2 * _GWEI
+
+    return contract.functions.anchorHash(
+        bytes.fromhex(payload_hash),
+        timestamp,
+        item_id,
+    ).build_transaction(
+        {
+            "from": Web3.to_checksum_address(from_address),
+            "nonce": w3.eth.get_transaction_count(from_address, "pending"),
+            "gas": 200000,
+            "chainId": w3.eth.chain_id,
+            "maxPriorityFeePerGas": int(priority_fee),
+            "maxFeePerGas": int(base_fee * 2 + priority_fee),
+            "type": 2,
+        }
+    )
+
+
+def broadcast_signed_anchor_transaction(signed_anchor_tx: str) -> AnchorResult:
+    """Publicar uma transação já assinada pelo user e devolver o TXID."""
+    w3 = get_web3()
+    if w3 is None:
+        return AnchorResult(tx_hash=None, anchored=False, reason="RPC URL not configured.")
+
+    try:
+        raw_tx = signed_anchor_tx[2:] if signed_anchor_tx.startswith("0x") else signed_anchor_tx
+        tx_hash = w3.eth.send_raw_transaction(bytes.fromhex(raw_tx))
+        tx_hash_hex = tx_hash.hex()
+
+        try:
+            receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=300)
+            if receipt["status"] != 1:
+                return AnchorResult(tx_hash=tx_hash_hex, anchored=False, reason="Transaction failed on chain")
+            return AnchorResult(tx_hash=tx_hash_hex, anchored=True, reason=None)
+        except TimeExhausted:
+            return AnchorResult(
+                tx_hash=tx_hash_hex,
+                anchored=True,
+                reason="Receipt timeout after broadcasting signed transaction",
+            )
+    except Exception as e:
+        logger.error(f"❌ Erro ao publicar raw transaction: {e}")
+        return AnchorResult(tx_hash=None, anchored=False, reason=str(e))
+
+
 def verify_tx_exists(tx_hash: str | None) -> bool:
     """Verificar se hash tx existe em Sepolia."""
     if not tx_hash:
@@ -194,12 +323,17 @@ def verify_tx_exists(tx_hash: str | None) -> bool:
         return False
 
 
-def decode_anchor_tx(tx_hash: str) -> dict | None:
-    """Decodificar uma transação anchorHash e extrair a hash ancorada."""
+def decode_anchor_tx(tx_hash: str, contract_address: str) -> dict | None:
+    """Decodificar uma transação anchorHash e extrair a hash ancorada.
+    
+    Args:
+        tx_hash: Hash da transação
+        contract_address: Endereço do contrato (obrigatório)
+    """
     w3 = get_web3()
     if w3 is None:
         return None
-    if not settings.contract_address or settings.contract_address == "0x0000000000000000000000000000000000000000":
+    if not contract_address or contract_address == "0x0000000000000000000000000000000000000000":
         return None
 
     try:
@@ -211,7 +345,7 @@ def decode_anchor_tx(tx_hash: str) -> dict | None:
             return None
 
         tx_to = tx.get("to")
-        if not tx_to or tx_to.lower() != settings.contract_address.lower():
+        if not tx_to or tx_to.lower() != contract_address.lower():
             return None
 
         input_data = tx.get("input")
@@ -229,6 +363,7 @@ def decode_anchor_tx(tx_hash: str) -> dict | None:
 
         return {
             "tx_hash": normalized_tx_hash,
+            "from_address": tx.get("from"),
             "status": receipt.get("status"),
             "block": receipt.get("blockNumber"),
             "gas_used": receipt.get("gasUsed"),
@@ -245,16 +380,16 @@ def decode_anchor_tx(tx_hash: str) -> dict | None:
         return None
 
 
-def is_anchored(payload_hash: str) -> bool:
+def is_anchored(payload_hash: str, contract_address: str) -> bool:
     """Verificar se um hash foi ancorado no smart contract."""
     w3 = get_web3()
     if w3 is None:
         return False
-    if not settings.contract_address or settings.contract_address == "0x0000000000000000000000000000000000000000":
+    if not contract_address or contract_address == "0x0000000000000000000000000000000000000000":
         return False
     try:
         contract = w3.eth.contract(
-            address=Web3.to_checksum_address(settings.contract_address),
+            address=Web3.to_checksum_address(contract_address),
             abi=ANCHOR_ABI
         )
         return contract.functions.isAnchored(bytes.fromhex(payload_hash)).call()
@@ -262,16 +397,16 @@ def is_anchored(payload_hash: str) -> bool:
         logger.error(f"Erro ao verificar se o hash está ancorado: {e}")
         return False
 
-def get_anchor_details(payload_hash: str) -> dict | None:
+def get_anchor_details(payload_hash: str, contract_address: str) -> dict | None:
     """Verificar detalhes do hash no smart contract."""
     w3 = get_web3()
     if w3 is None:
         return None
-    if not settings.contract_address or settings.contract_address == "0x0000000000000000000000000000000000000000":
+    if not contract_address or contract_address == "0x0000000000000000000000000000000000000000":
         return None
     try:
         contract = w3.eth.contract(
-            address=Web3.to_checksum_address(settings.contract_address),
+            address=Web3.to_checksum_address(contract_address),
             abi=ANCHOR_ABI
         )
         exists, timestamp, creator, item_id = contract.functions.getAnchorDetails(bytes.fromhex(payload_hash)).call()

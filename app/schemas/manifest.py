@@ -16,7 +16,6 @@ class ManifestPayload(BaseModel):
     ingredients: list[str] = Field(..., description="Lista de ingredientes para rastreabilidade.")
     origin: str = Field(..., description="Local de origem (cervejaria/fazenda).")
     sustainability: str = Field(..., description='Carimbo de sustentabilidade, ex. "Responsible Barley".')
-    creator: str = Field(..., description="Endereço do criador derivado da chave pública.")
     timestamp: str = Field(..., description="Timestamp ISO (2026-05-12T14:50:38.566021+00:00) da emissão de manifesto.")
 
 
@@ -25,6 +24,10 @@ class ManifestCreateRequest(BaseModel):
 
     payload: ManifestPayload
     auth: SignatureEnvelope
+    role: str | None = Field(default=None, description="Papel declarado do utilizador nesta operação.")
+    contract_address: str = Field(..., description="Endereço do contrato Anchor na blockchain Sepolia.")
+    tx_hash: str | None = Field(default=None, description="TXID opcional de uma transação já publicada.")
+    signed_anchor_tx: str | None = Field(default=None, description="Transação anchorHash assinada localmente pelo user para broadcast no backend.")
 
 
 class ManifestResponse(BaseModel):
@@ -32,4 +35,6 @@ class ManifestResponse(BaseModel):
 
     payload: ManifestPayload
     payload_hash: str
+    contract_address: str = Field(..., description="Endereço do contrato Anchor usado na transação.")
+    tx_hash: str = Field(..., description="TXID/hash da transação blockchain associada ao manifesto.")
     anchor: AnchorInfo

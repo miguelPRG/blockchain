@@ -25,7 +25,6 @@ class RecordPayload(BaseModel):
     manifest_id: str = Field(..., description="ID do manifesto (deve existir na blockchain).")
     quantity: float = Field(..., gt=0)
     unit: str
-    user: str = Field(..., description="Endereço do usuário derivado da chave pública.")
     timestamp: str = Field(..., description="Timestamp ISO (2026-05-12T14:50:38.566021+00:00).")
     notes: str | None = Field(default=None, description="Notas operacionais opcionais.")
 
@@ -35,6 +34,10 @@ class RecordCreateRequest(BaseModel):
 
     payload: RecordPayload
     auth: SignatureEnvelope
+    role: str | None = Field(default=None, description="Papel declarado do utilizador nesta operação.")
+    contract_address: str = Field(..., description="Endereço do contrato Anchor na blockchain Sepolia.")
+    tx_hash: str | None = Field(default=None, description="TXID opcional de uma transação já publicada.")
+    signed_anchor_tx: str | None = Field(default=None, description="Transação anchorHash assinada localmente pelo user para broadcast no backend.")
 
 
 class RecordResponse(BaseModel):
@@ -42,4 +45,6 @@ class RecordResponse(BaseModel):
 
     payload: RecordPayload
     payload_hash: str
+    contract_address: str = Field(..., description="Endereço do contrato Anchor usado na transação.")
+    tx_hash: str = Field(..., description="TXID/hash da transação blockchain associada ao registo.")
     anchor: AnchorInfo

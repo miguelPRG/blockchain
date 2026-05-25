@@ -7,5 +7,6 @@ requires-python = ">=3.14"
 dependencies = [
     "ecdsa>=0.19.2",
     "eth-account>=0.13.7",
+    "pydantic-settings>=2.14.1",
     "rich>=15.0.0",
 ]

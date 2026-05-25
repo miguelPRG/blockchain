@@ -2,17 +2,19 @@
 
 import logging
 import sys
-from datetime import datetime
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 
 from shared.hashing import sha256_hex, canonical_json_readable
-from shared.security import verify_signature, address_from_private_key, get_private_key_from_signer_id
+from shared.security import (
+    ethereum_address_from_public_key,
+)
 from app.schemas.record import RecordCreateRequest, RecordResponse, RecordType
 from app.models.manifest import Manifest as ManifestModel
 from app.models.record import Record as RecordModel
-from app.services.blockchain_service import anchor_hash, decode_anchor_tx
+from app.services.blockchain_service import broadcast_signed_anchor_transaction, decode_anchor_tx
+from app.services.signature_service import validate_dual_signature
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +23,6 @@ ROLE_ALLOWED_RECORD_TYPES = {
     "TRANSPORTER": {RecordType.TRANSFER, RecordType.DELIVERY},
     "RECEIVER": {RecordType.RECEIVED},
 }
-
 
 def create_record(db: Session, request: RecordCreateRequest) -> RecordResponse:
     """
@@ -36,33 +37,19 @@ def create_record(db: Session, request: RecordCreateRequest) -> RecordResponse:
     """
     payload = request.payload
     logger.info(f"Criando registo para manifesto: {payload.manifest_id}")
-    
-    # Derivar endereço correto a partir da chave privada do signer_id
-    signer_priv = get_private_key_from_signer_id(request.auth.signer_id)
-    if not signer_priv:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Signer ID '{request.auth.signer_id}' not found in environment.",
-        )
-    user_address = address_from_private_key(signer_priv)
+    user_address = ethereum_address_from_public_key(request.auth.public_key)
 
-    if payload.user != user_address:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Record user {payload.user} does not match signer {user_address}.",
-        )
-
-    if request.auth.role not in ROLE_ALLOWED_RECORD_TYPES:
+    if request.role not in ROLE_ALLOWED_RECORD_TYPES:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Invalid role for record creation.",
         )
 
-    if payload.record_type not in ROLE_ALLOWED_RECORD_TYPES[request.auth.role]:
+    if payload.record_type not in ROLE_ALLOWED_RECORD_TYPES[request.role]:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=(
-                f"Role '{request.auth.role}' cannot create record type '{payload.record_type.value}'."
+                f"Role '{request.role}' cannot create record type '{payload.record_type.value}'."
             ),
         )
     
@@ -90,38 +77,37 @@ def create_record(db: Session, request: RecordCreateRequest) -> RecordResponse:
     
     payload_hash = sha256_hex(payload_dict)
     
-    # Verificar assinatura
-    if not verify_signature(request.auth.public_key, payload_hash, request.auth.signature):
-        logger.error(f"Signature verification failed for hash: {payload_hash}")
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid ECDSA signature.")
-
-    # Converter timestamp ISO para Unix timestamp
-    timestamp_dt = datetime.fromisoformat(payload.timestamp)
-    unix_timestamp = int(timestamp_dt.timestamp())
-
-    # Ancorar o hash na blockchain
-    logger.info(f"[create_record] signer_id={request.auth.signer_id} signer_priv={'FOUND' if signer_priv else 'NOT FOUND'}")
-    anchor = anchor_hash(
+    validate_dual_signature(
+        auth=request.auth,
         payload_hash=payload_hash,
-        timestamp=unix_timestamp,
-        item_id=payload.record_id,
-        signer_private_key=signer_priv,
     )
-    
-    if not anchor.anchored:
-        logger.error(f"Falha ao ancorar hash do registo: {anchor.reason}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to anchor hash on blockchain: {anchor.reason}"
-        )
 
-    blockchain_anchor = decode_anchor_tx(anchor.tx_hash) if anchor.tx_hash else None
+    tx_hash = request.tx_hash
+    if not tx_hash:
+        if not request.signed_anchor_tx:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Either tx_hash or signed_anchor_tx must be provided.",
+            )
+
+        anchor = broadcast_signed_anchor_transaction(request.signed_anchor_tx)
+        if not anchor.anchored or not anchor.tx_hash:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Blockchain anchor failed. Record was not saved. Reason: {anchor.reason}",
+            )
+        tx_hash = anchor.tx_hash
+
+    # Validar a transação que acabou de ser publicada, ou o TXID enviado pelo CLI.
+    blockchain_anchor = decode_anchor_tx(tx_hash, request.contract_address)
     if (
         not blockchain_anchor
         or blockchain_anchor["payload_hash"] != payload_hash
         or blockchain_anchor["item_id"] != payload.record_id
         or blockchain_anchor["status"] != 1
         or blockchain_anchor["function"] != "anchorHash"
+        or not blockchain_anchor.get("from_address")
+        or blockchain_anchor["from_address"].lower() != user_address.lower()
     ):
         logger.error("Blockchain anchor does not match record payload. Record will not be stored.")
         raise HTTPException(
@@ -129,22 +115,25 @@ def create_record(db: Session, request: RecordCreateRequest) -> RecordResponse:
             detail="Blockchain anchor does not match record payload. Record was not saved.",
         )
     
-    logger.info(f"✅ Hash do registo ancorado com sucesso: TX {anchor.tx_hash}")
+    logger.info(f"✅ Hash do registo ancorado com sucesso: TX {tx_hash}")
 
-    # Armazenar no banco de dados local
+    # Só depois de validar o TXID guardamos o registo off-chain.
     db_record = RecordModel(
         record_id=payload.record_id,
         record_type=payload.record_type.value,
         manifest_id=payload.manifest_id,
         quantity=payload.quantity,
         unit=payload.unit,
-        user=payload.user,
+        user=user_address,
         timestamp=payload.timestamp,
         notes=payload.notes,
         payload_hash=payload_hash,
         signature=request.auth.signature,
         public_key=request.auth.public_key,
-        tx_hash=anchor.tx_hash,
+        manager_signature=request.auth.manager_signature,
+        manager_public_key=request.auth.manager_public_key,
+        contract_address=request.contract_address,
+        tx_hash=tx_hash,
     )
 
     try:
@@ -161,5 +150,7 @@ def create_record(db: Session, request: RecordCreateRequest) -> RecordResponse:
     return RecordResponse(
         payload=payload,
         payload_hash=payload_hash,
-        anchor={"tx_hash": anchor.tx_hash, "anchored": anchor.anchored, "reason": anchor.reason},
+        contract_address=request.contract_address,
+        tx_hash=tx_hash,
+        anchor={"tx_hash": tx_hash, "anchored": True, "reason": None},
     )

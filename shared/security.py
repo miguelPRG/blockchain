@@ -1,8 +1,6 @@
 """Utilitários auxiliares para chave ECDSA, assinatura e endereço."""
 
 import hashlib
-import logging
-import os
 
 from ecdsa import BadSignatureError, SECP256k1, SigningKey, VerifyingKey
 from eth_account import Account
@@ -26,11 +24,17 @@ def sign_hash(private_key_hex: str, hash_hex: str) -> str:
 def get_public_key_from_private(private_key_hex: str) -> str:
     """Derivar chave pública a partir da chave privada (SECP256k1).
     
-    - private_key_hex: Chave privada em hex
+    - private_key_hex: Chave privada em hex, com ou sem prefixo 0x
     """
-    private_key = SigningKey.from_string(bytes.fromhex(private_key_hex), curve=SECP256k1)
+    clean_privkey = private_key_hex[2:] if private_key_hex.startswith("0x") else private_key_hex
+    private_key = SigningKey.from_string(bytes.fromhex(clean_privkey), curve=SECP256k1)
     public_key = private_key.verifying_key
     return public_key.to_string().hex()
+
+
+def public_key_from_private_key(private_key_hex: str) -> str:
+    """Derivar chave pública com prefixo 0x a partir da chave privada."""
+    return f"0x{get_public_key_from_private(private_key_hex)}"
 
 
 def verify_signature(public_key_hex: str, hash_hex: str, signature_hex: str) -> bool:
@@ -78,42 +82,20 @@ def address_from_public_key(public_key_hex: str) -> str:
     return f"0x{digest[-40:]}"
 
 
-def get_private_key_from_signer_id(signer_id: str | None) -> str | None:
-    """Recupera a chave privada a partir do ID do utilizador (alice/bob/charlie).
-    
-    Args:
-        signer_id: ID do utilizador ("alice", "bob", "charlie", etc.)
-    
-    Returns:
-        Chave privada com prefixo 0x, ou None se não encontrada
+def ethereum_address_from_public_key(public_key_hex: str) -> str:
+    """Derivar endereço Ethereum correto a partir da chave pública SECP256k1.
+
+    A chave pública esperada é o par X/Y de 64 bytes em hex, com ou sem prefixo
+    0x. O endereço Ethereum são os últimos 20 bytes do Keccak-256 dessa chave.
     """
-    logger = logging.getLogger(__name__)
+    try:
+        from eth_utils import keccak
 
-    if not signer_id:
-        logger.warning("[get_private_key_from_signer_id] signer_id is empty")
-        return None
-
-    signer_id_lower = signer_id.lower()
-    
-    # Mapear ID para variável de ambiente
-    env_map = {
-        "alice": "ALICE_KEY",
-        "bob": "BOB_KEY",
-        "charlie": "CHARLIE_KEY",
-    }
-    
-    env_var = env_map.get(signer_id_lower)
-    if not env_var:
-        logger.warning(f"[get_private_key_from_signer_id] Unknown signer_id: {signer_id}")
-        return None
-    
-    priv = os.getenv(env_var)
-    if not priv:
-        logger.warning(f"[get_private_key_from_signer_id] {env_var} not set in environment")
-        return None
-    
-    logger.info(f"[get_private_key_from_signer_id] ✓ FOUND: {env_var}")
-    return priv if priv.startswith("0x") else f"0x{priv}"
-
-
+        clean_hex = public_key_hex[2:] if public_key_hex.startswith("0x") else public_key_hex
+        if clean_hex.startswith("04") and len(clean_hex) == 130:
+            clean_hex = clean_hex[2:]
+        digest = keccak(bytes.fromhex(clean_hex)).hex()
+        return f"0x{digest[-40:]}"
+    except Exception:
+        return "0x0000000000000000000000000000000000000000"
 

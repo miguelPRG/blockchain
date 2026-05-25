@@ -24,9 +24,55 @@ def _manifest_payload(manifest: ManifestModel) -> dict:
         "ingredients": json.loads(manifest.ingredients_json),
         "origin": manifest.origin,
         "sustainability": manifest.sustainability,
-        "creator": manifest.creator,
         "timestamp": manifest.timestamp,
     }
+
+
+def _manifest_response(manifest: ManifestModel) -> dict:
+    payload = _manifest_payload(manifest)
+    payload_hash_current = sha256_hex(payload)
+
+    verification = verify_payload(
+        VerificationRequest(
+            payload=payload,
+            tx_hash=manifest.tx_hash,
+            contract_address=manifest.contract_address,
+            item_id=manifest.manifest_id,
+            public_key=manifest.public_key,
+            signature=manifest.signature,
+            manager_public_key=manifest.manager_public_key,
+            manager_signature=manifest.manager_signature,
+            expected_hash=manifest.payload_hash,
+        )
+    )
+
+    return {
+        "payload": payload,
+        "payload_hash": manifest.payload_hash,
+        "payload_hash_current": payload_hash_current,
+        "signature": manifest.signature,
+        "public_key": manifest.public_key,
+        "manager_signature": manifest.manager_signature,
+        "manager_public_key": manifest.manager_public_key,
+        "contract_address": manifest.contract_address,
+        "tx_hash": manifest.tx_hash,
+        "verification": verification.model_dump(),
+    }
+
+
+@router.get(
+    "",
+    summary="Obter último manifesto com verificação criptográfica",
+    description="Recupera o manifesto mais recente quando nenhum ID é fornecido.",
+    response_model=dict,
+)
+async def get_latest_manifest(db: Session = Depends(get_db)):
+    manifest = db.query(ManifestModel).order_by(ManifestModel.created_at.desc()).first()
+    if not manifest:
+        raise HTTPException(status_code=404, detail="Nenhum manifesto encontrado")
+
+    return _manifest_response(manifest)
+
 
 @router.get(
     "/{manifest_id}",
@@ -39,30 +85,7 @@ async def get_manifest_by_id(manifest_id: str, db: Session = Depends(get_db)):
     if not manifest:
         raise HTTPException(status_code=404, detail=f"Manifesto '{manifest_id}' não encontrado")
 
-    payload = _manifest_payload(manifest)
-    payload_hash_current = sha256_hex(payload)
-
-    # Realizar verificação criptográfica integrada
-    verification = verify_payload(
-        VerificationRequest(
-            payload=payload,
-            tx_hash=manifest.tx_hash,
-            item_id=manifest_id,
-            public_key=manifest.public_key,
-            signature=manifest.signature,
-            expected_hash=manifest.payload_hash,
-        )
-    )
-
-    return {
-        "payload": payload,
-        "payload_hash": manifest.payload_hash,  # O que foi realmente ancorado na blockchain
-        "payload_hash_current": payload_hash_current,  # O calculado agora para comparação
-        "signature": manifest.signature,
-        "public_key": manifest.public_key,
-        "tx_hash": manifest.tx_hash,
-        "verification": verification.model_dump(),
-    }
+    return _manifest_response(manifest)
 
 @router.post(
     "",

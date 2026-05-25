@@ -3,8 +3,9 @@ import json
 from urllib import request as urlrequest
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
+from web3.exceptions import TransactionNotFound
 
-from app.core.settings import settings
+from app.services.blockchain_service import ANCHOR_ABI, get_web3
 
 router = APIRouter(prefix="/verification", tags=["verification"])
 
@@ -52,6 +53,97 @@ def query_etherscan_api(params: str) -> dict:
             status_code=503,
             detail=f"Erro ao consultar Etherscan API: {str(e)}"
         )
+
+
+def serialize_web3_value(value):
+    """Converter tipos Web3/HexBytes para valores JSON-friendly."""
+    if isinstance(value, (bytes, bytearray)):
+        return f"0x{value.hex()}"
+    if hasattr(value, "hex"):
+        return value.hex()
+    if isinstance(value, dict):
+        return {key: serialize_web3_value(val) for key, val in value.items()}
+    if isinstance(value, list):
+        return [serialize_web3_value(item) for item in value]
+    return value
+
+
+def get_transaction_data_from_rpc(tx_hash: str) -> dict:
+    """Obter dados da transação usando o RPC Sepolia configurado."""
+    w3 = get_web3()
+    if w3 is None:
+        return {"exists": False, "transaction": None, "source": "rpc"}
+
+    try:
+        tx = w3.eth.get_transaction(tx_hash)
+        return {
+            "exists": True,
+            "transaction": serialize_web3_value(dict(tx)),
+            "source": "rpc",
+        }
+    except TransactionNotFound:
+        return {"exists": False, "transaction": None, "source": "rpc"}
+    except Exception as e:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Erro ao consultar RPC Sepolia: {str(e)}"
+        )
+
+
+def get_transaction_receipt_status(tx_hash: str) -> int | None:
+    """Obter status de receipt via RPC, com fallback para Etherscan."""
+    w3 = get_web3()
+    if w3 is not None:
+        try:
+            receipt = w3.eth.get_transaction_receipt(tx_hash)
+            status = receipt.get("status")
+            return int(status) if status is not None else None
+        except TransactionNotFound:
+            return None
+        except Exception:
+            pass
+
+    receipt_params = f"module=proxy&action=eth_getTransactionReceipt&txhash={tx_hash}&apikey=YourApiKeyToken"
+    try:
+        receipt_data = query_etherscan_api(receipt_params)
+        receipt = receipt_data.get("result")
+        if isinstance(receipt, dict) and receipt.get("status"):
+            return int(receipt.get("status"), 16)
+    except Exception:
+        pass
+
+    return None
+
+
+def decode_anchor_input(input_data: str | None) -> dict:
+    """Decodificar input data de chamadas ao contrato Anchor."""
+    if not input_data or input_data == "0x":
+        return {}
+
+    try:
+        w3 = get_web3()
+        if w3 is None:
+            return {}
+
+        contract = w3.eth.contract(abi=ANCHOR_ABI)
+        func_obj, func_params = contract.decode_function_input(input_data)
+
+        payload_hash = func_params.get("_payloadHash")
+        if isinstance(payload_hash, (bytes, bytearray)):
+            payload_hash = f"0x{payload_hash.hex()}"
+        elif hasattr(payload_hash, "hex"):
+            payload_hash = payload_hash.hex()
+
+        return {
+            "function": func_obj.fn_name,
+            "data": {
+                "payload_hash": payload_hash,
+                "timestamp": func_params.get("_timestamp"),
+                "item_id": func_params.get("_itemId"),
+            },
+        }
+    except Exception:
+        return {}
 
 
 def get_contract_bytecode(contract_address: str) -> dict:
@@ -112,12 +204,18 @@ def get_transaction_data(tx_hash: str) -> dict:
         # Query: module=proxy&action=eth_getTransactionByHash&txhash=...
         params = f"module=proxy&action=eth_getTransactionByHash&txhash={tx_hash}&apikey=YourApiKeyToken"
         data = query_etherscan_api(params)
+        result = data.get("result")
         
-        if data.get("result"):
+        if isinstance(result, dict):
             return {
                 "exists": True,
-                "transaction": data.get("result"),
+                "transaction": result,
+                "source": "etherscan",
             }
+
+        rpc_data = get_transaction_data_from_rpc(tx_hash)
+        if rpc_data.get("exists"):
+            return rpc_data
         
         return {"exists": False, "transaction": None}
     
@@ -187,17 +285,14 @@ def get_transaction(tx_hash: str) -> dict:
         )
     
     tx = tx_info.get("transaction", {})
+    if not isinstance(tx, dict):
+        raise HTTPException(
+            status_code=502,
+            detail="Resposta inválida ao obter transação: formato inesperado."
+        )
     
-    # Obter status da transação (se possível)
-    status = None
-    receipt_params = f"module=proxy&action=eth_getTransactionReceipt&txhash={tx_hash}&apikey=YourApiKeyToken"
-    try:
-        receipt_data = query_etherscan_api(receipt_params)
-        if receipt_data.get("result"):
-            receipt = receipt_data.get("result", {})
-            status = int(receipt.get("status", "0x0"), 16)  # Converter hex para int
-    except Exception:
-        pass  # Se não conseguir, deixa como None
+    status = get_transaction_receipt_status(tx_hash)
+    decoded = decode_anchor_input(tx.get("input"))
     
     return {
         "tx_hash": tx.get("hash"),
@@ -211,8 +306,10 @@ def get_transaction(tx_hash: str) -> dict:
         "block_number": tx.get("blockNumber"),
         "transaction_index": tx.get("transactionIndex"),
         "status": status,  # None, 0 (failed), ou 1 (success)
+        "source": tx_info.get("source"),
+        "function": decoded.get("function"),
         "explorer_url": f"{ETHERSCAN_EXPLORER_URL}/tx/{tx_hash}",
-        "data": {},  # Placeholder para dados decodificados (se necessário)
+        "data": decoded.get("data", {}),
     }
 
 
@@ -227,27 +324,11 @@ def get_contract_status_api() -> dict:
     Returns:
         Status do contrato
     """
-    contract_address = settings.contract_address
-    is_zero_address = contract_address == "0x0000000000000000000000000000000000000000"
-    
-    # Se não configurado
-    if is_zero_address:
-        return {
-            "is_configured": False,
-            "is_valid": False,
-            "contract_address": None,
-            "message": "Contrato não foi configurado",
-        }
-    
-    # Verificar se existe na blockchain
-    contract_info = get_contract_bytecode(contract_address)
-    is_valid = contract_info.get("exists", False)
-    
+    # This application no longer stores a global contract address in settings.
+    # Clients should provide `contract_address` in each request where needed.
     return {
-        "is_configured": True,
-        "is_valid": is_valid,
-        "contract_address": contract_address,
-        "has_bytecode": is_valid,
-        "explorer_url": f"{ETHERSCAN_EXPLORER_URL}/address/{contract_address}",
-        "message": "Contrato validado com sucesso" if is_valid else "Contrato não encontrado na blockchain",
+        "is_configured": False,
+        "is_valid": False,
+        "contract_address": None,
+        "message": "Nenhum contrato configurado globalmente. Forneça o contract_address nas suas requisições.",
     }

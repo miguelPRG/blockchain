@@ -119,11 +119,7 @@ def display_decoded_tx(tx_data: dict):
             params_table.add_row(key, value_str)
         
         rprint(params_table)
-    
-    # Explorer link
-    explorer_url = tx_data.get("explorer_url")
-    if explorer_url:
-        rprint(f"\n[dim]Explorer: {explorer_url}[/dim]")
+
 
 
 def main():

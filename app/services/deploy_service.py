@@ -12,13 +12,13 @@ from app.core.settings import settings
 logger = logging.getLogger(__name__)
 
 
-def is_contract_deployed() -> bool:
+def is_contract_deployed(contract_address: str) -> bool:
     """Verificação se contrato está publicado e no formato esperado (com itemId)."""
     try:
         w3 = Web3(Web3.HTTPProvider(settings.sepolia_rpc_url))
         if not w3.is_connected():
             return False
-        code = w3.eth.get_code(settings.contract_address)
+        code = w3.eth.get_code(contract_address)
         if not code or len(code) <= 2:
             return False
 
@@ -37,26 +37,22 @@ def is_contract_deployed() -> bool:
                 "type": "function",
             }
         ]
-        contract = w3.eth.contract(address=Web3.to_checksum_address(settings.contract_address), abi=details_v2_abi)
+        contract = w3.eth.contract(address=Web3.to_checksum_address(contract_address), abi=details_v2_abi)
         contract.functions.getAnchorDetails(bytes(32)).call()
         return True
     except Exception:
         return False
 
 
-def auto_deploy_if_needed(verbose: bool = False) -> str | None:
+def auto_deploy_if_needed(verbose: bool = False, manager_key: str | None = None) -> str | None:
     """Fazer deployment automático se ainda não estiver publicado.
     
     Returns:
         Endereço do contrato (novo ou existente), ou None se falhou
     """
-    # Se já tem contrato configurado, verificar se está deployado
-    if settings.contract_address and settings.contract_address != "0x0":
-        if is_contract_deployed():
-            if verbose:
-                rprint(f"[green]✓ Contrato já publicado: {settings.contract_address}[/green]")
-            return settings.contract_address
-    
+    if not manager_key:
+        raise ValueError("manager_key is required for deployment")
+
     logger.info("Iniciando deployment automático")
     if verbose:
         rprint("\n[bold yellow]⚙️ Iniciando deployment automático...[/bold yellow]")
@@ -71,7 +67,7 @@ def auto_deploy_if_needed(verbose: bool = False) -> str | None:
         
         if verbose:
             rprint("[dim]🚀 Deploying na Sepolia...[/dim]")
-        contract_address = deploy_contract(compiled)
+        contract_address = deploy_contract(compiled, manager_key)
         
         if verbose:
             rprint(f"[green]✅ Contrato publicado: {contract_address}[/green]")
@@ -139,7 +135,7 @@ def compile_contract(solidity_file: Path) -> dict:
         raise
 
 
-def deploy_contract(compiled: dict) -> str:
+def deploy_contract(compiled: dict, manager_key: str) -> str:
     """Fazer deploy do contrato na Sepolia."""
     logger.info("Iniciando deployment do contrato")
     rprint("\n[bold cyan]🚀 Iniciando deployment...[/bold cyan]")
@@ -147,7 +143,7 @@ def deploy_contract(compiled: dict) -> str:
     if not settings.sepolia_rpc_url:
         logger.error("SEPOLIA_RPC_URL não configurada")
         raise ValueError("SEPOLIA_RPC_URL não configurada")
-    if not settings.manager_key:
+    if not manager_key:
         logger.error("MANAGER_KEY não configurada")
         raise ValueError("MANAGER_KEY não configurada")
     
@@ -160,7 +156,7 @@ def deploy_contract(compiled: dict) -> str:
     logger.debug("Conectado com sucesso a Sepolia")
     rprint("[green]✓ Conectado a Sepolia![/green]")
     
-    account = w3.eth.account.from_key(settings.manager_key)
+    account = w3.eth.account.from_key(manager_key)
     logger.debug(f"Conta: {account.address}")
     rprint(f"[dim]Conta: {account.address}[/dim]")
     
@@ -270,7 +266,7 @@ def deploy_contract(compiled: dict) -> str:
         
         rprint("\n[bold]🔐 Assinando e enviando transação...[/bold]")
         logger.info("Assinando transação")
-        signed_tx = w3.eth.account.sign_transaction(tx, settings.manager_key)
+        signed_tx = w3.eth.account.sign_transaction(tx, manager_key)
         
         logger.info("Enviando transação assinada")
         tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
@@ -297,7 +293,7 @@ def deploy_contract(compiled: dict) -> str:
         raise
 
 
-def diagnose_account() -> dict:
+def diagnose_account(manager_key: str | None = None) -> dict:
     """Diagnosticar estado da conta e rede."""
     result = {
         "connected": False,
@@ -313,8 +309,7 @@ def diagnose_account() -> dict:
         if not settings.sepolia_rpc_url:
             result["error"] = "SEPOLIA_RPC_URL não configurada"
             return result
-        
-        if not settings.manager_key:
+        if not manager_key:
             result["error"] = "MANAGER_KEY não configurada"
             return result
         
@@ -326,7 +321,7 @@ def diagnose_account() -> dict:
         
         result["connected"] = True
         
-        account = w3.eth.account.from_key(settings.manager_key)
+        account = w3.eth.account.from_key(manager_key)
         result["account"] = account.address
         
         balance_wei = w3.eth.get_balance(account.address)

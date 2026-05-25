@@ -1,10 +1,8 @@
 """Endpoints para configuração dinâmica da aplicação."""
-import os
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from app.core.settings import settings
-from shared.security import address_from_private_key
 
 router = APIRouter(prefix="/config", tags=["config"])
 
@@ -18,73 +16,28 @@ SUPPLY_MANAGER_ADDRESS = "0x9D77a7336C19eE8975Eb6267c2aF384B90C73455"
 # Modelos Pydantic
 # ============================================================
 
-class SupplyManagerAuth(BaseModel):
-    """Modelo para autenticar o Supply Manager."""
-    private_key: str
-
-
 class ContractValidationRequest(BaseModel):
     """Modelo para validar contrato existente."""
     contract_address: str
 
 
+class AnchorTransactionPrepareRequest(BaseModel):
+    """Pedido para preparar uma transação anchorHash sem assinatura."""
+
+    payload_hash: str
+    timestamp: int
+    item_id: str
+    contract_address: str
+    from_address: str
+
+
 @router.post("/authenticate-manager")
-def authenticate_manager(auth: SupplyManagerAuth) -> dict:
-    """
-    Autenticar o Supply Manager com a chave privada.
-    
-    Valida se a chave privada corresponde ao endereço esperado
-    e a armazena em settings para uso posterior.
-    
-    Args:
-        auth: Contém a chave privada do Supply Manager
-    
-    Returns:
-        Status da autenticação
-    
-    Raises:
-        HTTPException: Se a chave privada é inválida
-    """
-    private_key = auth.private_key
-    
-    if not private_key:
-        raise HTTPException(
-            status_code=400,
-            detail="Chave privada não pode estar vazia"
-        )
-    
-    # Garantir prefixo 0x
-    if not private_key.startswith("0x"):
-        private_key = f"0x{private_key}"
-    
-    try:
-        # Validar se a chave corresponde ao endereço esperado
-        derived_address = address_from_private_key(private_key)
-        
-        if derived_address.lower() != SUPPLY_MANAGER_ADDRESS.lower():
-            raise HTTPException(
-                status_code=401,
-                detail=f"Endereço inválido. Esperado: {SUPPLY_MANAGER_ADDRESS}, Obtido: {derived_address}"
-            )
-        
-        # Guardar a chave privada em memória e variável de ambiente
-        settings.manager_key = private_key
-        os.environ["MANAGER_KEY"] = private_key
-        
-        return {
-            "success": True,
-            "message": "Autenticação do Supply Manager bem-sucedida",
-            "manager_address": derived_address,
-            "manager_authenticated": True
-        }
-    
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Erro ao validar chave privada: {str(e)}"
-        )
+def authenticate_manager() -> dict:
+    """Endpoint desativado: chaves privadas nunca devem ser enviadas à API."""
+    raise HTTPException(
+        status_code=410,
+        detail="Private keys must stay in the CLI. The backend only validates public keys, signatures and tx_hash.",
+    )
 
 
 @router.post("/validate-contract")
@@ -112,11 +65,8 @@ def validate_contract(req: ContractValidationRequest) -> dict:
     from app.services.deploy_service import is_contract_deployed
     
     try:
-        # Atualizar settings em memória com o endereço a validar
-        settings.contract_address = contract_address
-        
         # Verificar se está deployado
-        is_deployed = is_contract_deployed()
+        is_deployed = is_contract_deployed(contract_address)
         
         if not is_deployed:
             raise HTTPException(
@@ -147,51 +97,54 @@ def validate_contract(req: ContractValidationRequest) -> dict:
 
 @router.post("/deploy-contract")
 def deploy_contract() -> dict:
-    """
-    Fazer deployment de um novo contrato Anchor.
-    
-    Requer que o Supply Manager tenha sido autenticado previamente.
-    
-    Returns:
-        Informações do contrato deployado
-    
-    Raises:
-        HTTPException: Se não autenticado ou falha no deployment
-    """
+    """Fazer deploy do contrato usando a chave do manager configurada no backend."""
     if not settings.manager_key:
         raise HTTPException(
-            status_code=401,
-            detail="Supply Manager não autenticado. Faça autenticação primeiro."
-        )
-    
-    from app.services.deploy_service import auto_deploy_if_needed
-    
-    try:
-        contract_address = auto_deploy_if_needed(verbose=False)
-        
-        if not contract_address:
-            raise HTTPException(
-                status_code=500,
-                detail="Falha ao fazer deployment do contrato"
-            )
-        
-        # Garantir que settings está atualizado
-        settings.contract_address = contract_address
-        
-        return {
-            "success": True,
-            "message": "Contrato deployado com sucesso",
-            "contract_address": contract_address,
-            "explorer_url": f"https://sepolia.etherscan.io/address/{contract_address}"
-        }
-    
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
             status_code=500,
-            detail=f"Erro ao fazer deployment: {str(e)}"
+            detail="MANAGER_KEY não configurada no backend.",
         )
+
+    from app.services.deploy_service import auto_deploy_if_needed
+
+    contract_address = auto_deploy_if_needed(verbose=False, manager_key=settings.manager_key)
+    if not contract_address:
+        raise HTTPException(status_code=500, detail="Falha ao fazer deploy do contrato.")
+
+    return {
+        "success": True,
+        "contract_address": contract_address,
+        "explorer_url": f"https://sepolia.etherscan.io/address/{contract_address}",
+    }
+
+
+@router.post("/prepare-anchor-transaction")
+def prepare_anchor_transaction(req: AnchorTransactionPrepareRequest) -> dict:
+    """Preparar transação anchorHash para o cliente assinar localmente."""
+    from app.services.blockchain_service import build_anchor_transaction
+
+    try:
+        transaction = build_anchor_transaction(
+            payload_hash=req.payload_hash,
+            timestamp=req.timestamp,
+            item_id=req.item_id,
+            contract_address=req.contract_address,
+            from_address=req.from_address,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    return {"transaction": _json_safe_transaction(transaction)}
+
+
+def _json_safe_transaction(transaction: dict) -> dict:
+    """Converter tipos Web3 para JSON sem perder dados necessários à assinatura."""
+    safe = {}
+    for key, value in transaction.items():
+        if hasattr(value, "hex"):
+            safe[key] = value.hex()
+        else:
+            safe[key] = value
+    return safe
 
 
 @router.get("/contract-status")
@@ -200,30 +153,15 @@ def get_contract_status() -> dict:
     Obter status actual do contrato.
     
     Returns:
-        Endereço do contrato e se está deployado
+        Mensagem informando que nenhum contrato é configurado globalmente
     """
-    from app.services.deploy_service import is_contract_deployed
-    
     try:
-        contract_addr = settings.contract_address
-        
-        # Se não tem endereço, não está deployado
-        if not contract_addr or contract_addr == "0x0000000000000000000000000000000000000000":
-            return {
-                "success": True,
-                "contract_address": None,
-                "is_deployed": False,
-                "explorer_url": None
-            }
-        
-        # Verificar se realmente está na blockchain
-        is_deployed = is_contract_deployed()
-        
         return {
             "success": True,
-            "contract_address": contract_addr,
-            "is_deployed": is_deployed,
-            "explorer_url": f"https://sepolia.etherscan.io/address/{contract_addr}" if is_deployed else None
+            "contract_address": None,
+            "is_deployed": False,
+            "explorer_url": None,
+            "note": "Nenhum contrato configurado globalmente. Forneça o contract_address nas suas requisições."
         }
     
     except Exception as e:
@@ -243,35 +181,11 @@ def diagnose_account() -> dict:
     Returns:
         Estado da conexão, saldo, gas price, etc.
     """
-    from app.services.deploy_service import diagnose_account as diagnose
+    raise HTTPException(status_code=410, detail="Private-key account diagnosis is disabled on the API.")
     
-    try:
-        result = diagnose()
-        
-        if result.get("error"):
-            raise HTTPException(
-                status_code=500,
-                detail=f"Erro no diagnóstico: {result['error']}"
-            )
-        
-        return {
-            "success": True,
-            "message": "Diagnóstico da conta",
-            "data": {
-                "connected": result["connected"],
-                "account": result["account"],
-                "balance_eth": result["balance_eth"],
-                "balance_wei": result["balance_wei"],
-                "gas_price_gwei": result["gas_price_gwei"],
-                "nonce": result["nonce"],
-                "sufficient_balance": result["balance_eth"] >= 0.01
-            }
-        }
-    
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Erro ao diagnosticar conta: {str(e)}"
-        )
+
+
+@router.post("/diagnose-account")
+def diagnose_account_post() -> dict:
+    """Endpoint desativado: chaves privadas nunca devem ser enviadas à API."""
+    raise HTTPException(status_code=410, detail="Private keys are not accepted by the API.")

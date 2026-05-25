@@ -22,9 +22,40 @@ def _record_payload(record: RecordModel) -> dict:
         "manifest_id": record.manifest_id,
         "quantity": record.quantity,
         "unit": record.unit,
-        "user": record.user,
         "timestamp": record.timestamp,
         "notes": record.notes,
+    }
+
+
+def _record_response(record: RecordModel) -> dict:
+    payload = _record_payload(record)
+    payload_hash_current = sha256_hex(payload)
+
+    verification = verify_payload(
+        VerificationRequest(
+            payload=payload,
+            tx_hash=record.tx_hash,
+            contract_address=record.contract_address,
+            item_id=record.record_id,
+            public_key=record.public_key,
+            signature=record.signature,
+            manager_public_key=record.manager_public_key,
+            manager_signature=record.manager_signature,
+            expected_hash=record.payload_hash,
+        )
+    )
+
+    return {
+        "payload": payload,
+        "payload_hash": record.payload_hash,
+        "payload_hash_current": payload_hash_current,
+        "signature": record.signature,
+        "public_key": record.public_key,
+        "manager_signature": record.manager_signature,
+        "manager_public_key": record.manager_public_key,
+        "contract_address": record.contract_address,
+        "tx_hash": record.tx_hash,
+        "verification": verification.model_dump(),
     }
 
 
@@ -40,6 +71,20 @@ async def create_record_endpoint(request: RecordCreateRequest, db: Session = Dep
 
 
 @router.get(
+    "",
+    summary="Obter último registo com verificação criptográfica",
+    description="Recupera o registo mais recente quando nenhum ID é fornecido.",
+    response_model=dict,
+)
+async def get_latest_record(db: Session = Depends(get_db)):
+    record = db.query(RecordModel).order_by(RecordModel.created_at.desc()).first()
+    if not record:
+        raise HTTPException(status_code=404, detail="Nenhum registro encontrado")
+
+    return _record_response(record)
+
+
+@router.get(
     "/{record_id}",
     summary="Obter registro por ID com verificação criptográfica",
     description="Recupera um registo específico com metadados, prova de ancoragem blockchain e verificação criptográfica integrada.",
@@ -50,30 +95,7 @@ async def get_record_by_id(record_id: str, db: Session = Depends(get_db)):
     if not record:
         raise HTTPException(status_code=404, detail=f"Registro '{record_id}' não encontrado")
 
-    payload = _record_payload(record)
-    payload_hash_current = sha256_hex(payload)
-
-    # Realizar verificação criptográfica integrada
-    verification = verify_payload(
-        VerificationRequest(
-            payload=payload,
-            tx_hash=record.tx_hash,
-            item_id=record_id,
-            public_key=record.public_key,
-            signature=record.signature,
-            expected_hash=record.payload_hash,
-        )
-    )
-
-    return {
-        "payload": payload,
-        "payload_hash": record.payload_hash,  # O que foi realmente ancorado na blockchain
-        "payload_hash_current": payload_hash_current,  # O calculado agora para comparação
-        "signature": record.signature,
-        "public_key": record.public_key,
-        "tx_hash": record.tx_hash,
-        "verification": verification.model_dump(),
-    }
+    return _record_response(record)
 
 
 class TamperRequest(BaseModel):
