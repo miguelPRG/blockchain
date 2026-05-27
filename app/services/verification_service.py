@@ -30,6 +30,7 @@ def verify_payload(request: VerificationRequest) -> VerificationResponse:
 
     blockchain_tx = decode_anchor_tx(request.tx_hash, request.contract_address) if request.tx_hash else None
     blockchain_payload_hash = blockchain_tx["payload_hash"] if blockchain_tx else None
+    blockchain_from_address = blockchain_tx["from_address"] if blockchain_tx else None
     blockchain_item_id = blockchain_tx["item_id"] if blockchain_tx else None
     blockchain_hash_matches = (
         recomputed_hash == blockchain_payload_hash
@@ -67,6 +68,7 @@ def verify_payload(request: VerificationRequest) -> VerificationResponse:
         manager_public_key_valid=manager_public_key_valid,
         manager_signature_valid=manager_signature_valid,
         blockchain_payload_hash=blockchain_payload_hash,
+        blockchain_from_address=blockchain_from_address,
         blockchain_hash_matches=blockchain_hash_matches,
         blockchain_tx_valid=blockchain_tx_valid,
         blockchain_item_id=blockchain_item_id,

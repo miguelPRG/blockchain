@@ -76,8 +76,6 @@ def create_manifest(db: Session, request: ManifestCreateRequest) -> ManifestResp
             or not transfer
             or transfer.record_type != RecordType.TRANSFER.value
             or transfer.manifest_id != payload.parent_manifest_id
-            or transfer.sender_user_id != "bob"
-            or transfer.receiver_user_id != "charlie"
         ):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,

@@ -27,6 +27,7 @@ class VerificationResponse(BaseModel):
     manager_public_key_valid: bool | None
     manager_signature_valid: bool | None
     blockchain_payload_hash: str | None = None
+    blockchain_from_address: str | None = None
     blockchain_hash_matches: bool | None = None
     blockchain_tx_valid: bool | None = None
     blockchain_item_id: str | None = None

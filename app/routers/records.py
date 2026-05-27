@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from shared.hashing import sha256_hex
 from app.models.record import Record as RecordModel
-from app.schemas.record import RecordCreateRequest, RecordResponse
+from app.schemas.record import RecordCreateRequest, RecordResponse, RecordType
 from app.schemas.verification import VerificationRequest
 from app.services.record_service import create_record
 from app.services.verification_service import verify_payload
@@ -24,10 +24,8 @@ def _record_payload(record: RecordModel) -> dict:
         "timestamp": record.timestamp,
         "notes": record.notes,
     }
-    if record.sender_user_id is not None:
+    if record.record_type == RecordType.RECEIVED.value and record.sender_user_id is not None:
         payload["sender_user_id"] = record.sender_user_id
-    if record.receiver_user_id is not None:
-        payload["receiver_user_id"] = record.receiver_user_id
     if record.related_record_id is not None:
         payload["related_record_id"] = record.related_record_id
     return payload
@@ -68,6 +66,7 @@ def _record_response(record: RecordModel) -> dict:
 @router.post(
     "",
     response_model=RecordResponse,
+    response_model_exclude_none=True,
     summary="Criar registo",
     description="Cria registo assinado, armazena off-chain e ancora hash na blockchain.",
 )
@@ -91,6 +90,31 @@ async def get_latest_record(db: Session = Depends(get_db)):
 
 
 @router.get(
+    "/lookup",
+    summary="Listar TRANSFERs e RECEIVEDs para escolha na verificação",
+    description="Devolve tabelas de registos TRANSFER e RECEIVED/DELIVERED com verificação integrada.",
+    response_model=dict,
+)
+async def get_record_lookup(db: Session = Depends(get_db)):
+    transfers = (
+        db.query(RecordModel)
+        .filter(RecordModel.record_type == RecordType.TRANSFER.value)
+        .order_by(RecordModel.created_at.desc())
+        .all()
+    )
+    received = (
+        db.query(RecordModel)
+        .filter(RecordModel.record_type == RecordType.RECEIVED.value)
+        .order_by(RecordModel.created_at.desc())
+        .all()
+    )
+    return {
+        "transfers": [_record_response(record) for record in transfers],
+        "received": [_record_response(record) for record in received],
+    }
+
+
+@router.get(
     "/pending-transfers",
     summary="Listar TRANSFERs ainda sem RECEIVED associado",
     description="Devolve transferências Bob -> Charlie que ainda não foram confirmadas por um registo RECEIVED.",
@@ -110,8 +134,6 @@ async def get_pending_transfers(db: Session = Depends(get_db)):
         db.query(RecordModel)
         .filter(
             RecordModel.record_type == "TRANSFER",
-            RecordModel.sender_user_id == "bob",
-            RecordModel.receiver_user_id == "charlie",
             ~RecordModel.record_id.in_(received_transfer_ids),
         )
         .order_by(RecordModel.created_at.asc())

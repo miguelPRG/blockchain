@@ -333,12 +333,7 @@ def create_manifest_interactive(
     base_url: str,
     private_key: str,
 ) -> tuple[str | None, str | None]:
-    """
-    Cria um manifesto de forma interativa.
-
-    Como a criação do manifesto representa o nascimento do lote,
-    o sistema cria também um registo PRODUCED associado.
-    """
+    """Cria um manifesto de forma interativa."""
 
     console.print("\n[bold cyan]📋 Criar Novo Manifesto[/bold cyan]")
     console.print("[dim]Preencha os dados do lote de cerveja[/dim]\n")
@@ -413,67 +408,7 @@ def create_manifest_interactive(
         console.print(f"[bold cyan]TXID da transação:[/bold cyan] {tx_hash}")
         console.print(f"[dim]Explorer: https://sepolia.etherscan.io/tx/{tx_hash}[/dim]")
 
-    produced_record_id = create_produced_record_for_manifest(
-        base_url=base_url,
-        private_key=private_key,
-        manager_private_key=manager_private_key,
-        manifest_id=manifest_id,
-        quantity=quantity,
-        contract_address=contract_address,
-    )
-
-    return manifest_id, produced_record_id
-
-
-def create_produced_record_for_manifest(
-    *,
-    base_url: str,
-    private_key: str,
-    manager_private_key: str,
-    manifest_id: str,
-    quantity: float,
-    contract_address: str,
-) -> str | None:
-    """Criar automaticamente o record PRODUCED associado a um manifesto novo."""
-
-    record_id = f"produced-{manifest_id}"
-    payload = {
-        "record_id": record_id,
-        "record_type": "PRODUCED",
-        "manifest_id": manifest_id,
-        "quantity": quantity,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "notes": "Produção inicial do manifesto",
-    }
-
-    console.print("\n[dim]Criando registo PRODUCED automático...[/dim]")
-    try:
-        body, payload_hash = create_signed_api_request(
-            payload=payload,
-            user_private_key=private_key,
-            manager_private_key=manager_private_key,
-            role="PRODUCER",
-            contract_address=contract_address,
-            item_id=record_id,
-            timestamp_iso=payload["timestamp"],
-        )
-    except RuntimeError as exc:
-        console.print(f"[red]✗ Não foi possível assinar o PRODUCED automático: {exc}[/red]")
-        return None
-
-    console.print(f"[yellow]PRODUCED HASH:[/yellow] {payload_hash}")
-    result = post_json(f"{base_url}/records", body)
-    if not result:
-        console.print("[red]✗ Manifesto criado, mas falhou o registo PRODUCED automático[/red]")
-        return None
-
-    console.print("[green]✓ Registo PRODUCED criado e ancorado![/green]")
-    tx_hash = result.get("tx_hash") or result.get("anchor", {}).get("tx_hash")
-    if tx_hash:
-        console.print(f"[bold cyan]TXID do PRODUCED:[/bold cyan] {tx_hash}")
-        console.print(f"[dim]Explorer: https://sepolia.etherscan.io/tx/{tx_hash}[/dim]")
-
-    return record_id
+    return manifest_id, None
 
 
 def create_bob_manifest_after_transfer(
@@ -643,6 +578,64 @@ def select_pending_transfer_for_receipt(base_url: str) -> dict | None:
     return valid_transfers[int(selected) - 1]
 
 
+def _record_payload_is_valid(record: dict) -> bool:
+    return (record.get("verification") or {}).get("overall_valid") is True
+
+
+def display_record_lookup_tables(base_url: str) -> None:
+    """Mostrar tabelas de TRANSFER e RECEIVED para ajudar a escolher registos."""
+    result = get_json(f"{base_url}/records/lookup")
+    if not result:
+        console.print("[red]✗ Não foi possível obter as tabelas de registos[/red]")
+        return
+
+    received_records = result.get("received", [])
+    confirmed_transfer_ids = {
+        payload.get("related_record_id")
+        for record in received_records
+        if (payload := record.get("payload", {})).get("related_record_id")
+    }
+
+    def build_table(title: str, records: list[dict], *, show_confirmation: bool = False) -> Table:
+        table = Table(title=title, show_header=True, header_style="bold cyan")
+        table.add_column("#", style="cyan", width=4)
+        table.add_column("Record ID", style="white")
+        table.add_column("Manifesto", style="white")
+        table.add_column("Quantidade", justify="right")
+        if show_confirmation:
+            table.add_column("Confirmado", style="white")
+        table.add_column("Estado", style="white")
+
+        if not records:
+            empty_row = ["-", "sem registos", "-", "-"]
+            if show_confirmation:
+                empty_row.append("-")
+            empty_row.append("-")
+            table.add_row(*empty_row)
+            return table
+
+        for index, record in enumerate(records, start=1):
+            payload = record.get("payload", {})
+            status = "[green]válido[/green]" if _record_payload_is_valid(record) else "[red]inválido[/red]"
+            row = [
+                str(index),
+                payload.get("record_id", ""),
+                payload.get("manifest_id", ""),
+                str(payload.get("quantity", "")),
+            ]
+            if show_confirmation:
+                confirmed = payload.get("record_id") in confirmed_transfer_ids
+                row.append("[green]sim[/green]" if confirmed else "[yellow]não[/yellow]")
+            row.append(status)
+            table.add_row(*row)
+        return table
+
+    console.print()
+    console.print(build_table("Registos TRANSFER", result.get("transfers", []), show_confirmation=True))
+    console.print()
+    console.print(build_table("Registos RECEIVED / DELIVERED", received_records))
+
+
 def show_manifest_chain_and_get_max_transfer(base_url: str, manifest_id: str) -> float | None:
     """Mostrar cadeia root -> derivados e devolver máximo transferível."""
     chain_data = get_json(f"{base_url}/manifests/{manifest_id}/chain")
@@ -729,12 +722,7 @@ def create_record_interactive_for_role(
     if record_type == "RECEIVED":
         transfer_record = select_pending_transfer_for_receipt(base_url)
         transfer_payload = transfer_record.get("payload") if transfer_record else None
-        if (
-            not transfer_payload
-            or transfer_payload.get("record_type") != "TRANSFER"
-            or transfer_payload.get("sender_user_id") != "bob"
-            or transfer_payload.get("receiver_user_id") != "charlie"
-        ):
+        if not transfer_payload or transfer_payload.get("record_type") != "TRANSFER":
             console.print("[red]✗ O record indicado não é uma TRANSFER válida Bob -> Charlie[/red]")
             return None
 
@@ -776,12 +764,12 @@ def create_record_interactive_for_role(
             )
             quantity_default = f"{max_transfer_quantity:g}"
     sender_user_id = None
-    receiver_user_id = None
 
-    if record_type in {"TRANSFER", "RECEIVED"}:
-        sender_user_id = "bob"
-        receiver_user_id = "charlie"
+    if record_type == "TRANSFER":
         console.print("[dim]Fluxo configurado: Bob transfere, Charlie recebe.[/dim]")
+    elif record_type == "RECEIVED":
+        sender_user_id = BOB_ADDRESS
+        console.print("[dim]Fluxo configurado: Charlie confirma receção enviada pelo endereço público do Bob.[/dim]")
 
     record_id = Prompt.ask("[bold]ID do Registo[/bold]", default=record_id_default)
 
@@ -802,7 +790,6 @@ def create_record_interactive_for_role(
         "manifest_id": manifest_id,
         "quantity": quantity,
         "sender_user_id": sender_user_id,
-        "receiver_user_id": receiver_user_id,
         "related_record_id": related_record_id,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "notes": notes,
@@ -881,7 +868,26 @@ def verify_data() -> None:
     endpoint_path = endpoint_map[endpoint_choice.lower()]
     item_label = "Manifesto" if endpoint_choice == "m" else "Registo"
 
-    item_id = Prompt.ask(f"ID de {item_label} (Enter para usar o último)", default="")
+    item_id = ""
+    if endpoint_choice == "r":
+        while True:
+            lookup_choice = Prompt.ask(
+                "Como quer escolher o registo? Último (u), ID específico (i), ou tabelas (t)",
+                choices=["u", "i", "t"],
+                default="u",
+            )
+            if lookup_choice == "u":
+                item_id = ""
+                break
+            if lookup_choice == "i":
+                item_id = Prompt.ask(f"ID de {item_label}", default="")
+                if item_id:
+                    break
+                console.print("[yellow]Indique um ID ou escolha outra opção.[/yellow]")
+                continue
+            display_record_lookup_tables(BASE_URL)
+    else:
+        item_id = Prompt.ask(f"ID de {item_label} (Enter para usar o último)", default="")
 
     # Fazer GET que já inclui verificação criptográfica integrada
     url = f"{BASE_URL}/{endpoint_path}/{item_id}" if item_id else f"{BASE_URL}/{endpoint_path}"
@@ -943,9 +949,11 @@ def verify_data() -> None:
 
     tx_hash = data.get("tx_hash") or data.get("anchor", {}).get("tx_hash")
     if tx_hash:
+        tx_creator = verification.get("blockchain_from_address") or "N/A"
         console.print(
             Panel(
-                f"[bold cyan]{tx_hash}[/bold cyan]\n\n"
+                f"[bold]Hash da transação:[/bold]\n[bold cyan]{tx_hash}[/bold cyan]\n\n"
+                f"[bold]Criada por:[/bold]\n[cyan]{tx_creator}[/cyan]\n\n"
                 f"[dim]https://sepolia.etherscan.io/tx/{tx_hash}[/dim]",
                 title="[bold]🔗 TXID Blockchain[/bold]",
                 border_style="cyan",
@@ -1087,8 +1095,7 @@ def build_menu_options(role: str) -> dict[str, tuple[str, str]]:
         )
         next_option += 1
 
-    # O produtor não cria PRODUCED manualmente porque isso já acontece
-    # automaticamente ao criar o manifesto.
+    # O produtor cria apenas manifestos; o record PRODUCED deixou de ser necessário.
     if role in ROLE_TO_RECORD_TYPES and role != "PRODUCER":
         action_label = "Criar registo da sua função"
         if role == "TRANSPORTER":
@@ -1153,15 +1160,13 @@ def run_app(initial_user_id: str | None) -> None:
         action = options[choice][0]
 
         if action == "create_manifest":
-            manifest_id, produced_record_id = create_manifest_interactive(
+            manifest_id, _ = create_manifest_interactive(
                 base_url=BASE_URL,
                 private_key=private_key,
             )
 
             if manifest_id:
                 last_manifest_id = manifest_id
-            if produced_record_id:
-                last_record_id = produced_record_id
 
         elif action == "create_record":
             record_result = create_record_interactive_for_role(

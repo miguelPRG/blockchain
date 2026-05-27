@@ -13,6 +13,7 @@ from shared.security import (
 )
 from app.schemas.record import RecordCreateRequest, RecordResponse, RecordType
 from app.schemas.verification import VerificationRequest
+from app.core.settings import settings
 from app.models.manifest import Manifest as ManifestModel
 from app.models.record import Record as RecordModel
 from app.services.blockchain_service import broadcast_signed_anchor_transaction, decode_anchor_tx
@@ -20,6 +21,7 @@ from app.services.signature_service import validate_dual_signature
 from app.services.verification_service import verify_payload
 
 logger = logging.getLogger(__name__)
+BOB_ADDRESS = settings.bob_address
 
 ROLE_ALLOWED_RECORD_TYPES = {
     "PRODUCER": {RecordType.PRODUCED},
@@ -58,11 +60,15 @@ def _sum_quantities(rows) -> float:
 
 
 def record_payload_for_hash(payload) -> dict:
-    """Canonical record payload, preserving old notes=None behavior."""
+    """Canonical record payload used for signatures and blockchain hashes."""
     payload_dict = payload.model_dump(mode="json")
-    for optional_field in ("sender_user_id", "receiver_user_id", "related_record_id"):
-        if payload_dict.get(optional_field) is None:
-            payload_dict.pop(optional_field, None)
+    payload_dict.pop("receiver_user_id", None)
+    if payload.record_type != RecordType.RECEIVED:
+        payload_dict.pop("sender_user_id", None)
+    elif payload_dict.get("sender_user_id") is None:
+        payload_dict.pop("sender_user_id", None)
+    if payload_dict.get("related_record_id") is None:
+        payload_dict.pop("related_record_id", None)
     return payload_dict
 
 
@@ -131,10 +137,8 @@ def _record_payload_for_verification(record: RecordModel) -> dict:
         "timestamp": record.timestamp,
         "notes": record.notes,
     }
-    if record.sender_user_id is not None:
+    if record.record_type == RecordType.RECEIVED.value and record.sender_user_id is not None:
         payload["sender_user_id"] = record.sender_user_id
-    if record.receiver_user_id is not None:
-        payload["receiver_user_id"] = record.receiver_user_id
     if record.related_record_id is not None:
         payload["related_record_id"] = record.related_record_id
     return payload
@@ -185,10 +189,10 @@ def _validate_record_flow(db: Session, payload, manifest: ManifestModel) -> None
         return
 
     if payload.record_type == RecordType.TRANSFER:
-        if payload.sender_user_id != "bob" or payload.receiver_user_id != "charlie":
+        if payload.sender_user_id is not None or payload.receiver_user_id is not None:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="TRANSFER must identify Bob as sender_user_id and Charlie as receiver_user_id.",
+                detail="TRANSFER records must not include sender_user_id or receiver_user_id in the payload.",
             )
 
         available_quantity = manifest.quantity - _transferred_quantity(records)
@@ -203,10 +207,14 @@ def _validate_record_flow(db: Session, payload, manifest: ManifestModel) -> None
         return
 
     if payload.record_type == RecordType.RECEIVED:
-        if payload.sender_user_id != "bob" or payload.receiver_user_id != "charlie":
+        if (
+            payload.sender_user_id is None
+            or payload.sender_user_id.lower() != BOB_ADDRESS.lower()
+            or payload.receiver_user_id is not None
+        ):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="RECEIVED must identify Bob as sender_user_id and Charlie as receiver_user_id.",
+                detail="RECEIVED must include sender_user_id with Bob's public address and must not include receiver_user_id.",
             )
         if not payload.related_record_id:
             raise HTTPException(
@@ -219,8 +227,6 @@ def _validate_record_flow(db: Session, payload, manifest: ManifestModel) -> None
             not transfer
             or transfer.record_type != RecordType.TRANSFER.value
             or transfer.manifest_id != payload.manifest_id
-            or transfer.sender_user_id != payload.sender_user_id
-            or transfer.receiver_user_id != payload.receiver_user_id
         ):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
