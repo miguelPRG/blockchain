@@ -1,125 +1,251 @@
-# Esboco do Relatorio
+# Blockchain-Backed Supply Chain Traceability
 
-## Sistema Implementado
+> A hybrid traceability system for craft beer that combines an off-chain operational database with tamper-evident proofs anchored on Ethereum Sepolia.
 
-Este projeto implementa um sistema hibrido de rastreabilidade de cadeia de fornecimento com dados operacionais guardados off-chain e provas de integridade ancoradas na blockchain Sepolia.
+[![Python](https://img.shields.io/badge/Python-3.14-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-API-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![Solidity](https://img.shields.io/badge/Solidity-Smart%20Contract-363636?logo=solidity)](https://soliditylang.org/)
+[![Ethereum](https://img.shields.io/badge/Ethereum-Sepolia-627EEA?logo=ethereum&logoColor=white)](https://sepolia.etherscan.io/)
+[![SQLite](https://img.shields.io/badge/SQLite-Off--chain%20Storage-003B57?logo=sqlite&logoColor=white)](https://www.sqlite.org/)
 
-O sistema segue quatro componentes principais:
+## Demo preview
 
-- Users: Alice, Bob e Charlie, cada um com uma wallet Ethereum e uma chave privada usada para assinar operacoes.
-- Supply Chain Manager: backend FastAPI que valida pedidos, assinaturas, quantidades e transacoes blockchain.
-- Repository: base de dados SQLite onde ficam guardados manifestos, records, assinaturas, hashes e referencias para transacoes.
-- Blockchain: contrato inteligente `Anchor.sol`, usado apenas para guardar hashes criptograficos dos manifestos e records.
+![CLI verification showing a derived manifest, its Sepolia transaction, matching payload hash, and valid participant and manager signatures](screenshot.png)
 
-## Roles e Operacoes
+<p align="center">
+  <em>The CLI independently verifies the off-chain payload against its blockchain anchor and digital signatures.</em>
+</p>
 
-Foram definidos tres utilizadores:
+## The problem
 
-- Alice: producer. Cria manifestos e records `PRODUCED`.
-- Bob: transporter. Cria records `TRANSFER`.
-- Charlie: receiver. Cria records `RECEIVED`, usados como certificacao final de rececao.
+Supply chains often rely on data stored by one central operator. If that database is changed—accidentally or maliciously—other participants may have no independent way to prove what the original record contained.
 
-Todos os utilizadores podem verificar manifestos e records especificos.
+Storing every business field directly on a public blockchain would provide transparency, but it is expensive, slow, and unsuitable for operational or sensitive data.
 
-## Fluxo Principal
+This project explores a practical middle ground:
 
-1. Alice cria um manifesto de bens com tipo, quantidade, origem, ingredientes, timestamp e outros metadados.
-2. O manifesto e assinado por Alice e pelo Supply Chain Manager.
-3. O hash canonico do manifesto e ancorado na blockchain.
-4. Opcionalmente, e criado um record `PRODUCED` associado ao manifesto.
-5. Bob cria um record `TRANSFER`, indicando a quantidade transferida.
-6. O sistema valida se existe quantidade disponivel no repositorio.
-7. O record `TRANSFER` e assinado por Bob e pelo Supply Chain Manager, guardado off-chain e ancorado na blockchain.
-8. Depois da transferencia, e criado um novo manifesto derivado para Bob, com a quantidade restante.
-9. Charlie confirma a rececao atraves de um record `RECEIVED`, referenciando o record `TRANSFER` de Bob.
-10. O record `RECEIVED` e assinado por Charlie e pelo Supply Chain Manager, guardado off-chain e ancorado na blockchain.
+- complete manifests and operational records stay in SQLite;
+- every payload is converted into deterministic canonical JSON and hashed with SHA-256;
+- the user and the Supply Chain Manager sign the same hash;
+- only the hash, timestamp, creator, and item ID are anchored on Ethereum Sepolia;
+- any later modification becomes detectable by recomputing and comparing the evidence.
 
-## Assinaturas e Autenticacao
+The result is an auditable trail that does not require an independent verifier to blindly trust the API or its database.
 
-Cada manifesto ou record usa um envelope de assinatura comum:
+## Demo scenario
 
-- `payload`: dados funcionais do manifesto ou record.
-- `auth.public_key`: chave publica do user.
-- `auth.signature`: assinatura do user sobre o hash do payload.
-- `auth.manager_public_key`: chave publica do Supply Chain Manager.
-- `auth.manager_signature`: assinatura do manager sobre o mesmo hash.
-- `signed_anchor_tx`: transacao blockchain assinada localmente pelo user.
+The application models a craft beer journey across three participants:
 
-As chaves privadas nunca sao enviadas ao backend. O CLI assina localmente o payload e a transacao blockchain. O backend recebe apenas chaves publicas, assinaturas e transacoes ja assinadas.
+| Participant | Role | Responsibility |
+| --- | --- | --- |
+| Alice | Producer | Creates the original batch manifest |
+| Bob | Transporter | Records a transfer and receives a derived manifest for the remaining quantity |
+| Charlie | Receiver | Confirms receipt against Bob's exact transfer |
+| Supply Chain Manager | Co-signer | Co-signs operations without replacing the participant's signature |
 
-## Integridade e Blockchain
+```mermaid
+sequenceDiagram
+    participant A as Alice / Producer
+    participant API as FastAPI + SQLite
+    participant B as Bob / Transporter
+    participant C as Charlie / Receiver
+    participant ETH as Anchor.sol / Sepolia
 
-O sistema calcula um hash SHA-256 sobre uma representacao JSON canonica de cada manifesto ou record. Esse hash e:
+    A->>API: Create and sign batch manifest
+    API->>ETH: Broadcast user-signed hash anchor
+    ETH-->>API: Transaction receipt
+    API-->>A: Manifest + transaction hash
 
-- usado para validar as assinaturas digitais;
-- guardado no repositorio;
-- enviado para o contrato inteligente `Anchor.sol`;
-- verificado novamente quando o dado e consultado.
+    B->>API: Create signed TRANSFER record
+    API->>API: Validate available quantity
+    API->>ETH: Anchor transfer hash
+    API-->>B: Create derived manifest for remaining stock
 
-Na blockchain fica apenas o hash, o timestamp e o identificador do item. Os dados completos permanecem off-chain.
-
-## Verificacao
-
-A verificacao de um manifesto ou record especifico inclui:
-
-- recomputar o hash do payload guardado no repositorio;
-- comparar o hash recomputado com o hash guardado;
-- verificar a assinatura do user;
-- verificar a assinatura do Supply Chain Manager;
-- obter e decodificar a transacao blockchain;
-- confirmar que o hash ancorado na blockchain corresponde ao payload;
-- confirmar que o item ID da transacao corresponde ao manifesto ou record.
-
-Se algum campo for alterado diretamente na base de dados, a recomputacao do hash deixa de coincidir com a assinatura e com a prova blockchain. Assim, discrepancias tornam-se detetaveis.
-
-## Consistencia de Quantidades
-
-O backend rejeita operacoes que excedam a quantidade disponivel.
-
-Na transferencia, Bob apenas pode transferir uma quantidade menor ou igual a quantidade disponivel no manifesto. Na rececao, Charlie nao escolhe manualmente a quantidade: o CLI obtem o record `TRANSFER` de Bob e preenche automaticamente o `manifest_id` e a quantidade recebida.
-
-Isto reduz erros manuais e garante que o record `RECEIVED` certifica exatamente a transferencia criada por Bob.
-
-## Configuracao
-
-As wallets sao configuradas por ficheiros `.env`.
-
-No backend:
-
-```env
-SEPOLIA_RPC_URL=...
-SUPPLY_MANAGER_ADDRESS=0x...
+    C->>API: Confirm the pending transfer
+    API->>API: Verify manifest and transfer integrity
+    API->>ETH: Anchor RECEIVED record hash
+    API-->>C: Verifiable receipt
 ```
 
-No cliente:
+## What makes it interesting
 
-```env
-ALICE_ADDRESS=0x...
-BOB_ADDRESS=0x...
-CHARLIE_ADDRESS=0x...
-SUPPLY_MANAGER_ADDRESS=0x...
-CONTRACT_ADDRESS=0x...
+- **Hybrid architecture:** operational data remains off-chain while immutable integrity proofs live on-chain.
+- **Local key custody:** private keys are entered and used by the CLI; they are never sent to the backend.
+- **Dual signatures:** both the participant and the Supply Chain Manager sign the canonical payload hash.
+- **Role-based workflow:** producers, transporters, and receivers can only create records allowed for their role.
+- **Quantity consistency:** transfers cannot exceed available stock, and receipts cannot exceed the referenced transfer.
+- **Manifest lineage:** transfer-derived manifests preserve root, parent, and source-record references.
+- **Independent verification:** the verifier checks the current payload, stored hash, signatures, transaction sender, contract call, and item ID.
+- **Tamper demonstration:** built-in test endpoints can alter an off-chain quantity to demonstrate that verification then fails.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    CLI[Rich CLI<br/>local signing] -->|HTTP + signed payload| API[FastAPI]
+    API --> RULES[Role, lineage<br/>and quantity validation]
+    API --> DB[(SQLite<br/>full business data)]
+    API -->|broadcast signed transaction| CONTRACT[Anchor.sol<br/>Ethereum Sepolia]
+    VERIFY[Independent verifier] --> API
+    VERIFY --> CONTRACT
 ```
 
-O backend nao precisa das wallets de Alice, Bob ou Charlie. O cliente usa esses enderecos para validar se a private key introduzida corresponde ao personagem escolhido. O backend precisa do endereco publico do Supply Chain Manager para validar que a assinatura do manager pertence a entidade correta.
+| Layer | Technology | Purpose |
+| --- | --- | --- |
+| Client | Python, Rich, eth-account | Interactive workflow, wallet validation, local signatures |
+| API | FastAPI, Pydantic | Endpoints, validation, orchestration, verification |
+| Repository | SQLAlchemy, SQLite | Off-chain manifests, records, hashes, signatures, and transaction references |
+| Shared cryptography | SHA-256, ECDSA | Canonical hashing, signing, and signature verification |
+| Blockchain | Solidity, Web3.py, Sepolia | Immutable hash anchoring and transaction evidence |
 
-## Evidencias a Anexar
+## Integrity verification
 
-Para a entrega, devem ser anexadas evidencias concretas:
+For each manifest or record, the system:
 
-- screenshot ou log da criacao de um manifesto;
-- screenshot ou log de um record `PRODUCED`;
-- screenshot ou log de um record `TRANSFER`;
-- screenshot ou log de um record `RECEIVED`;
-- hashes dos payloads;
-- assinaturas do user e do manager;
-- hashes das transacoes Sepolia;
-- links Etherscan das transacoes;
-- exemplo de verificacao valida;
-- exemplo de tampering na base de dados e verificacao invalida.
+1. rebuilds the canonical payload;
+2. recomputes its SHA-256 hash;
+3. compares it with the hash stored in the repository;
+4. verifies the participant's ECDSA signature;
+5. verifies the manager's signature and expected Ethereum address;
+6. fetches and decodes the Sepolia transaction;
+7. confirms that it called `anchorHash` on the expected contract;
+8. compares the on-chain hash and item ID with the current resource.
 
-## Decisoes de Implementacao
+The resource is considered valid only when every required check succeeds.
 
-O sistema trata `RECEIVED` como certificacao final de entrega. Esta decisao mantem o fluxo simples e verificavel: Charlie, enquanto destinatario, assina a confirmacao de rececao, que inclui referencia para a transferencia de Bob, quantidade recebida, timestamp, assinaturas e prova blockchain.
+## Smart contract
 
-O Supply Chain Manager nao e considerado confiavel. Por isso, a validade do sistema nao depende apenas da base de dados ou do backend. Qualquer parte pode recomputar hashes, verificar assinaturas e comparar os dados com a blockchain.
+[`Anchor.sol`](app/contracts/Anchor.sol) deliberately has a narrow responsibility. It stores a unique payload hash together with its timestamp, creator, and business item ID:
+
+```solidity
+function anchorHash(
+    bytes32 payloadHash,
+    uint256 timestamp,
+    string calldata itemId
+) external;
+```
+
+Keeping the contract small reduces on-chain cost and leaves business rules in the application layer, where they can evolve more easily.
+
+## Project structure
+
+```text
+.
+├── app/
+│   ├── contracts/       # Solidity anchor contract
+│   ├── core/            # Settings, database, and security
+│   ├── models/          # SQLAlchemy models
+│   ├── routers/         # FastAPI endpoints
+│   ├── schemas/         # Pydantic request/response models
+│   ├── services/        # Business, blockchain, and verification logic
+│   └── main.py          # API entry point
+├── client/
+│   ├── cli_user.py      # Interactive Alice/Bob/Charlie demo
+│   ├── api_client.py    # HTTP client
+│   └── blockchain_client.py
+└── shared/              # Canonical hashing, signatures, and transaction signing
+```
+
+## Getting started
+
+### Prerequisites
+
+- Python 3.14+
+- [`uv`](https://docs.astral.sh/uv/)
+- a Sepolia RPC URL
+- four development wallets: Alice, Bob, Charlie, and the Supply Chain Manager
+- Sepolia ETH for contract deployment and anchor transactions
+
+> Use test wallets only. Never commit private keys or real funds to this repository.
+
+### 1. Install dependencies
+
+From the repository root:
+
+```bash
+uv sync --project app
+uv sync --project client
+```
+
+### 2. Configure the backend
+
+Create `app/.env`:
+
+```env
+SEPOLIA_RPC_URL=https://your-sepolia-rpc.example
+SUPPLY_MANAGER_ADDRESS=0xYourManagerPublicAddress
+BOB_ADDRESS=0xBobsPublicAddress
+```
+
+`MANAGER_KEY` is optional and is not required by the normal CLI flow. Private keys should remain on the client side.
+
+### 3. Configure the client
+
+Create `client/.env`:
+
+```env
+ALICE_ADDRESS=0xAlicesPublicAddress
+BOB_ADDRESS=0xBobsPublicAddress
+CHARLIE_ADDRESS=0xCharliesPublicAddress
+SUPPLY_MANAGER_ADDRESS=0xYourManagerPublicAddress
+
+# Optional: the CLI writes this after deploying a contract
+CONTRACT_ADDRESS=0xYourExistingAnchorContract
+```
+
+### 4. Start the API
+
+```bash
+uv run --project app fastapi dev app/main.py
+```
+
+Useful local URLs:
+
+- API documentation: <http://127.0.0.1:8000/docs>
+- Health check: <http://127.0.0.1:8000/health>
+
+### 5. Start the interactive demo
+
+In a second terminal:
+
+```bash
+uv run --project client python client/cli_user.py
+```
+
+The CLI validates each private key against the configured public address. If no valid contract is configured, it can prepare, locally sign, and deploy a new `Anchor` contract to Sepolia.
+
+## Suggested presentation flow
+
+For a short recruiter or technical interview demo:
+
+1. show the API documentation and the small `Anchor.sol` contract;
+2. log in as Alice and create a craft beer manifest;
+3. switch to Bob and transfer part of the batch;
+4. show the derived manifest and remaining quantity;
+5. switch to Charlie and confirm the pending transfer;
+6. verify a resource and open its transaction on Sepolia Etherscan;
+7. run the tamper simulation and verify the same resource again;
+8. highlight that the database changed, but the signatures and blockchain evidence did not.
+
+## API highlights
+
+| Method | Endpoint | Description |
+| --- | --- | --- |
+| `POST` | `/manifests` | Validate, anchor, and store a signed manifest |
+| `GET` | `/manifests/{id}` | Retrieve a manifest with integrated verification |
+| `GET` | `/manifests/{id}/chain` | Inspect lineage and available quantity |
+| `POST` | `/records` | Create a role-controlled operational record |
+| `GET` | `/records/pending-transfers` | List transfers awaiting receipt |
+| `GET` | `/records/{id}` | Retrieve a record with integrated verification |
+| `POST` | `/verify` | Run the complete independent verification pipeline |
+| `POST` | `/config/validate-contract` | Validate an existing Sepolia contract |
+
+## Design decisions and scope
+
+This is a portfolio and learning project, not a production supply-chain platform. It intentionally focuses on integrity, provenance, signing, blockchain anchoring, and cross-participant workflow.
+
+Before production use, the system would need stronger identity and authorization management, secret storage or hardware wallets, migrations, automated tests, observability, transaction retry/idempotency controls, a production database, and an external security review.
+
+## Skills demonstrated
+
+Python backend development, REST API design, domain modelling, asymmetric cryptography, smart contracts, Web3 integration, transaction decoding, relational persistence, security-oriented architecture, and interactive CLI design.
